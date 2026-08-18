@@ -169,9 +169,9 @@ class MappingAndNamingTests(unittest.TestCase):
         control = replace(
             dialog.controls[1],
             class_name="Button",
-            text="A long option",
+            text="Preserve items during processing operation",
             style=3 | 0x00002000,
-            rect=RectDlu(8, 20, 60, 32),
+            rect=RectDlu(8, 20, 99, 30),
         )
 
         mapped = ControlMapper().map(control)
@@ -185,6 +185,84 @@ class MappingAndNamingTests(unittest.TestCase):
         self.assertEqual(policy.vertical, "Preferred")
         self.assertTrue(mapped.expands_horizontally)
         self.assertTrue(mapped.expands_vertically)
+        self.assertTrue(mapped.multiline_text)
+        text = next(
+            property_.value.value
+            for property_ in mapped.properties
+            if property_.name == "text"
+        )
+        self.assertEqual(
+            text,
+            "Preserve items\nduring processing\noperation",
+        )
+
+    def test_short_multiline_checkbox_keeps_a_single_line(self) -> None:
+        dialog = sample_dialog()
+        control = replace(
+            dialog.controls[1],
+            class_name="Button",
+            text="Use open schedule",
+            style=3 | 0x00002000,
+            rect=RectDlu(8, 20, 74, 11),
+        )
+
+        mapped = ControlMapper().map(control)
+
+        policy = next(
+            property_.value
+            for property_ in mapped.properties
+            if property_.name == "sizePolicy"
+        )
+        text = next(
+            property_.value.value
+            for property_ in mapped.properties
+            if property_.name == "text"
+        )
+        self.assertEqual(text, "Use open schedule")
+        self.assertEqual(policy.vertical, "Fixed")
+        self.assertFalse(mapped.expands_vertically)
+        self.assertTrue(mapped.multiline_text)
+
+    def test_radio_and_push_buttons_use_the_same_multiline_adapter(self) -> None:
+        dialog = sample_dialog()
+        for style, expected_class, expected_text in (
+            (
+                9 | 0x00002000,
+                "QRadioButton",
+                "Preserve items\nduring processing\noperation",
+            ),
+            (
+                0 | 0x00002000,
+                "QPushButton",
+                "Preserve items during\nprocessing operation",
+            ),
+        ):
+            with self.subTest(expected_class=expected_class):
+                control = replace(
+                    dialog.controls[1],
+                    class_name="Button",
+                    text="Preserve items during processing operation",
+                    style=style,
+                    rect=RectDlu(8, 20, 99, 30),
+                )
+
+                mapped = ControlMapper().map(control)
+                text = next(
+                    property_.value.value
+                    for property_ in mapped.properties
+                    if property_.name == "text"
+                )
+                policy = next(
+                    property_.value
+                    for property_ in mapped.properties
+                    if property_.name == "sizePolicy"
+                )
+
+                self.assertEqual(mapped.qt_class, expected_class)
+                self.assertEqual(text, expected_text)
+                self.assertEqual(policy.vertical, "Preferred")
+                self.assertTrue(mapped.expands_vertically)
+                self.assertTrue(mapped.multiline_text)
 
     def test_combo_and_group_hints_cannot_distort_coordinate_tracks(self) -> None:
         dialog = sample_dialog()

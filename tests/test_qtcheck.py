@@ -34,6 +34,7 @@ from rc2ui.qtcheck.summary import (
     summarize_diagnostics,
 )
 from rc2ui.qtcheck.ui_transform import prepare_ui_xml
+from tests.test_layout_and_emitter import dense_multiline_dialog
 from tests.test_mapping_and_naming import sample_dialog
 
 
@@ -727,6 +728,40 @@ class QtCheckTests(unittest.TestCase):
         self.assertGreater(
             payload["forms"][0]["font_test"]["form_size_after"][1],
             payload["forms"][0]["font_test"]["form_size_before"][1],
+        )
+
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_dense_multiline_checkbox_renders_without_clipped_text(self) -> None:
+        dialog = dense_multiline_dialog()
+        mapped = tuple(
+            ControlMapper().map(control) for control in dialog.controls
+        )
+        naming = NameResolver().resolve(dialog, mapped)
+        generated = LayoutBuilder().build(dialog, mapped, naming)
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            ui = root / "sample.ui"
+            report = root / "report.json"
+            ui.write_text(emit_ui(generated.root_widget), encoding="utf-8")
+
+            run_qt_checks(
+                (ui,),
+                report_path=report,
+                required=True,
+            )
+            form = json.loads(report.read_text(encoding="utf-8"))["forms"][0]
+
+        self.assertTrue(form["font_test"]["passed"])
+        self.assertFalse(
+            any(
+                diagnostic["code"] == "qt.clipped-text"
+                and "preserveItems" in diagnostic["message"]
+                for diagnostic in form["diagnostics"]
+            )
         )
 
     def test_runner_passes_source_geometry_to_worker(self) -> None:

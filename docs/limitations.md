@@ -57,6 +57,13 @@ so tracks and gaps can grow with glyph metrics rather than remaining fixed in
 pixels. Empty dialogs have no coordinate grid and therefore retain only their
 fixed source-size floor.
 
+Qt button widgets do not expose automatic word wrapping. For Win32
+`BS_MULTILINE` buttons, rc2ui therefore inserts deterministic line breaks from
+the source DLU width, separately for every available language. This preserves
+ordinary checkbox, radio-button, and push-button behavior without requiring a
+runtime helper class, but unusually long unbroken words can still require
+manual review in fonts with exceptional metrics.
+
 The optional PyQt6/PySide6 runtime check substitutes promoted widgets with
 their base Qt classes. It validates the surrounding layout but cannot reproduce a custom
 widget's real `sizeHint`, painting, child objects or behavior. Its metrics and

@@ -38,3 +38,4 @@ class MappedControl:
     mapping_rule: str | None = None
     mapping_rule_key: str | None = None
     runtime_configured: tuple[str, ...] = ()
+    multiline_text: bool = False

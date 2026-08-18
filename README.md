@@ -340,6 +340,14 @@ proportions, and does not resize tiny host-owned child templates. The enlarged
 DLU width also feeds the invisible font ruler, so the reserve grows when the
 application changes its font dynamically.
 
+Win32 `BUTTON` controls carrying `BS_MULTILINE` retain their multiline intent.
+`QLabel` uses native word wrapping; Qt button classes have no equivalent
+`wordWrap` property, so rc2ui inserts deterministic word breaks from the
+source DLU width. Every language variant is wrapped independently, and the
+source DLU height plus the font ruler keeps those lines usable after a dynamic
+font change. A short, single-line-height button is left on one line even when
+the permissive Win32 flag is present.
+
 Nearly identical overlapping controls may represent runtime alternatives.
 Repeated z-order offsets, geometry, class compatibility, and multilingual
 agreement identify those layers. Alternatives share a layout cell without

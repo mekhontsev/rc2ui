@@ -360,6 +360,16 @@ SysDateTimePick32           -> QDateTimeEdit
 SysMonthCal32               -> QCalendarWidget
 ```
 
+Text layout is a shared mapping concern rather than a checkbox-specific
+exception. Source controls with native wrapping use the corresponding Qt
+property. Win32 `BUTTON` controls with `BS_MULTILINE` need an adapter because
+`QAbstractButton` has no `wordWrap` property: the mapper inserts stable word
+breaks using the source width, Qt-class decoration width, mnemonic-aware glyph
+estimates, and the source multiline height. Default and translated controls
+pass through the same mapper independently, so each language receives its own
+line breaks. The coordinate grid and font rulers then scale both the occupied
+height and the surrounding relations after `FontChange`.
+
 Semantic roles (`label`, `input`, `action`, `group`, `container`, and
 `decoration`) are consumed by label association, compound analysis, and layout
 inference. Unknown registered classes and owner-draw cases become

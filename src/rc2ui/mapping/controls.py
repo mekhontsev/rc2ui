@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from rc2ui.domain.dialog import Control
 from rc2ui.mapping.model import (
     ControlRole,
@@ -7,6 +9,7 @@ from rc2ui.mapping.model import (
     SeparatorOrientation,
 )
 from rc2ui.mapping.overrides import ControlMap
+from rc2ui.mapping.text_layout import wrap_control_text_dlu
 from rc2ui.qt.model import QtEnum, QtProperty, QtSize, QtSizePolicy, QtString
 
 
@@ -68,7 +71,7 @@ class ControlMapper:
 
     def map(self, control: Control) -> MappedControl:
         if self.overrides and (mapped := self.overrides.map(control)):
-            return _with_common_properties(mapped)
+            return _finalize_mapping(mapped)
         class_name = control.class_name.casefold()
         if class_name == "button":
             mapped = self._button(control)
@@ -84,7 +87,7 @@ class ControlMapper:
             mapped = self._scrollbar(control)
         else:
             mapped = self._common_or_custom(control, class_name)
-        return _with_common_properties(mapped)
+        return _finalize_mapping(mapped)
 
     def _button(self, control: Control) -> MappedControl:
         type_ = control.style & BS_TYPEMASK
@@ -108,7 +111,10 @@ class ControlMapper:
             properties = list(text)
             if type_ in {BS_3STATE, BS_AUTO3STATE}:
                 properties.append(QtProperty("tristate", True))
-            tall = bool(control.style & BS_MULTILINE) or control.rect.height >= 24
+            multiline = bool(
+                control.style & BS_MULTILINE
+            ) and control.rect.height >= 18
+            tall = multiline or control.rect.height >= 24
             properties.append(
                 QtProperty(
                     "sizePolicy",
@@ -127,7 +133,10 @@ class ControlMapper:
                 expands_vertically=tall,
             )
         if type_ in {BS_RADIOBUTTON, BS_AUTORADIOBUTTON}:
-            tall = bool(control.style & BS_MULTILINE) or control.rect.height >= 24
+            multiline = bool(
+                control.style & BS_MULTILINE
+            ) and control.rect.height >= 18
+            tall = multiline or control.rect.height >= 24
             return MappedControl(
                 control,
                 "QRadioButton",
@@ -174,6 +183,9 @@ class ControlMapper:
                     ),
                 ),
             )
+        multiline = bool(
+            control.style & BS_MULTILINE
+        ) and control.rect.height >= 18
         properties = list(text)
         # The RC rectangle, not a translated text sizeHint, defines the grid.
         # Ignored prevents captions from shifting tracks; filling the source
@@ -181,7 +193,10 @@ class ControlMapper:
         properties.append(
             QtProperty(
                 "sizePolicy",
-                QtSizePolicy("Ignored", "Fixed"),
+                QtSizePolicy(
+                    "Ignored",
+                    "Preferred" if multiline else "Fixed",
+                ),
             )
         )
         if type_ == BS_DEFPUSHBUTTON:
@@ -192,6 +207,7 @@ class ControlMapper:
             ControlRole.ACTION,
             tuple(properties),
             expands_horizontally=True,
+            expands_vertically=multiline,
         )
 
     def _edit(self, control: Control, *, rich: bool) -> MappedControl:
@@ -358,6 +374,7 @@ class ControlMapper:
             tuple(properties),
             expands_horizontally=True,
             expands_vertically=expands_vertically,
+            multiline_text=multiline,
         )
 
     def _listbox(self, control: Control) -> MappedControl:
@@ -605,6 +622,7 @@ class ControlMapper:
                 properties,
                 expands_horizontally=True,
                 expands_vertically=multiline,
+                multiline_text=multiline,
             )
         return MappedControl(
             control,
@@ -639,6 +657,49 @@ def _property_if_text(name: str, text: str | None) -> tuple[QtProperty, ...]:
     return (QtProperty(name, QtString(text)),) if text is not None else ()
 
 
+def _finalize_mapping(mapped: MappedControl) -> MappedControl:
+    return _with_common_properties(_with_multiline_button_text(mapped))
+
+
+def _with_multiline_button_text(mapped: MappedControl) -> MappedControl:
+    control = mapped.control
+    if (
+        mapped.qt_class
+        not in {"QCheckBox", "QRadioButton", "QPushButton", "QToolButton"}
+        or not control.style & BS_MULTILINE
+    ):
+        return mapped
+    mapped = replace(mapped, multiline_text=True)
+    if control.rect.height < 18 or not control.text:
+        return mapped
+    wrapped = wrap_control_text_dlu(
+        control.text,
+        qt_class=mapped.qt_class,
+        width_dlu=control.rect.width,
+    )
+    if "\n" not in wrapped:
+        return mapped
+    found = False
+    properties: list[QtProperty] = []
+    for property_ in mapped.properties:
+        if property_.name != "text":
+            properties.append(property_)
+            continue
+        value = property_.value
+        if isinstance(value, QtString):
+            value = replace(value, value=wrapped)
+        elif isinstance(value, str):
+            value = wrapped
+        else:
+            properties.append(property_)
+            continue
+        properties.append(replace(property_, value=value))
+        found = True
+    if not found:
+        return mapped
+    return replace(mapped, properties=tuple(properties))
+
+
 def _with_common_properties(mapped: MappedControl) -> MappedControl:
     if not mapped.control.style & WS_DISABLED:
         return mapped
@@ -656,6 +717,7 @@ def _with_common_properties(mapped: MappedControl) -> MappedControl:
         mapping_rule=mapped.mapping_rule,
         mapping_rule_key=mapped.mapping_rule_key,
         runtime_configured=mapped.runtime_configured,
+        multiline_text=mapped.multiline_text,
     )
 
 

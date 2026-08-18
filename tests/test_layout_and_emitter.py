@@ -10,8 +10,15 @@ from rc2ui.analysis.multilingual import (
     MultilingualLayoutHints,
     PairRelationHint,
     ParentRelationHint,
+    fuse_dialog_languages,
 )
-from rc2ui.domain.dialog import Control, ControlKey, Dialog, DialogKey
+from rc2ui.domain.dialog import (
+    Control,
+    ControlKey,
+    Dialog,
+    DialogFont,
+    DialogKey,
+)
 from rc2ui.domain.geometry import RectDlu
 from rc2ui.domain.resource_id import ResourceId
 from rc2ui.layout.infer import LayoutBuilder, _layout_topology_diagnostics
@@ -19,6 +26,7 @@ from rc2ui.mapping.controls import ControlMapper
 from rc2ui.naming.resolver import NameResolver
 from rc2ui.qt.emitter import emit_ui
 from rc2ui.qt.model import QtProperty, QtString, QtWidget
+from rc2ui.translations.form import prepare_localized_form
 from rc2ui.validation.ui_xml import validate_ui_xml
 from tests.test_mapping_and_naming import sample_dialog
 
@@ -42,6 +50,82 @@ def make_dialog(specs: list[tuple[str, str, int, RectDlu]]) -> Dialog:
         for order, (class_name, text, style, rect) in enumerate(specs)
     )
     return Dialog(key, "Sample", RectDlu(0, 0, 180, 80), 0, 0, controls)
+
+
+def dense_multiline_dialog() -> Dialog:
+    """Obfuscated geometry regression derived from a real dense RC form."""
+
+    group = 7
+    combo = 3
+    multiline = 0x2000
+    specs = [
+        ("Button", "Primary source", group, RectDlu(3, 2, 132, 26)),
+        ("ComboBox", "", combo, RectDlu(7, 12, 124, 79)),
+        ("Button", "Secondary source", group, RectDlu(137, 2, 100, 26)),
+        ("ComboBox", "", combo, RectDlu(142, 12, 92, 79)),
+        ("Button", "Mode", group, RectDlu(3, 31, 165, 25)),
+        ("Button", "Choice alpha", 9, RectDlu(7, 41, 75, 12)),
+        ("Button", "Choice beta", 9, RectDlu(89, 41, 75, 12)),
+        ("Button", "Code", group, RectDlu(3, 59, 66, 25)),
+        ("ComboBox", "", combo, RectDlu(7, 69, 58, 91)),
+        ("Button", "Date", group, RectDlu(71, 59, 62, 25)),
+        ("Static", "-", 1, RectDlu(75, 69, 54, 12)),
+        (
+            "Button",
+            "Preserve items during processing operation",
+            3 | multiline,
+            RectDlu(138, 58, 99, 30),
+        ),
+        ("Button", "Amount", group, RectDlu(3, 87, 91, 25)),
+        ("Edit", "", 0, RectDlu(6, 97, 86, 12)),
+        ("Button", "Quantity", group, RectDlu(96, 87, 72, 25)),
+        ("Edit", "", 0, RectDlu(98, 97, 58, 12)),
+        (
+            "msctls_updown32",
+            "Spin",
+            0x00B0,
+            RectDlu(156, 97, 10, 12),
+        ),
+        ("Button", "Unit", group, RectDlu(172, 87, 66, 25)),
+        ("Static", "100", 1, RectDlu(176, 97, 58, 12)),
+        ("Button", "Three related values", group, RectDlu(3, 115, 235, 25)),
+        ("Edit", "", 0, RectDlu(7, 125, 72, 12)),
+        ("Edit", "", 0, RectDlu(85, 125, 72, 12)),
+        ("Edit", "", 0, RectDlu(163, 125, 72, 12)),
+        ("Button", "Rate", group, RectDlu(3, 143, 77, 25)),
+        ("Edit", "", 0, RectDlu(7, 153, 70, 12)),
+        ("Button", "Term", group, RectDlu(82, 143, 77, 25)),
+        ("Edit", "", 0, RectDlu(86, 153, 70, 12)),
+        ("Button", "Refund", group, RectDlu(161, 143, 77, 25)),
+        ("Edit", "", 0, RectDlu(165, 153, 70, 12)),
+        (
+            "Button",
+            "Use open schedule",
+            3 | multiline,
+            RectDlu(7, 171, 74, 11),
+        ),
+        ("Static", "Execution period", 0, RectDlu(24, 185, 88, 11)),
+        ("Edit", "", 0, RectDlu(114, 183, 31, 12)),
+        ("Button", "Benchmark", group, RectDlu(3, 198, 234, 26)),
+        ("ComboBox", "", combo, RectDlu(7, 209, 227, 79)),
+        ("Button", "Partner", group, RectDlu(3, 229, 235, 25)),
+        ("ComboBox", "", combo, RectDlu(7, 239, 228, 90)),
+        ("Button", "Client code", group, RectDlu(3, 257, 77, 25)),
+        ("ComboBox", "", combo, RectDlu(6, 267, 70, 91)),
+        ("Button", "Comment", group, RectDlu(82, 257, 77, 25)),
+        ("Edit", "", 0, RectDlu(85, 267, 70, 12)),
+        ("Button", "Adjustment", group, RectDlu(161, 257, 77, 25)),
+        ("Edit", "", 0, RectDlu(165, 267, 70, 12)),
+        ("Static", "", 0x10, RectDlu(1, 288, 238, 1)),
+        ("Button", "Apply", 1, RectDlu(65, 294, 55, 14)),
+        ("Button", "Cancel", 0, RectDlu(130, 294, 39, 14)),
+    ]
+    return replace(
+        make_dialog(specs),
+        rect=RectDlu(0, 0, 240, 314),
+        caption="Sample operation",
+        font=DialogFont(9, "Arial"),
+    )
 
 
 def build(dialog: Dialog, hints: MultilingualLayoutHints | None = None):
@@ -893,6 +977,94 @@ class LayoutAndEmitterTests(unittest.TestCase):
                     geometry.width,
                     round(dialog.rect.width * 1.75),
                 )
+
+    def test_dense_multiline_button_text_wraps_without_widening_form(self) -> None:
+        dialog = dense_multiline_dialog()
+
+        xml = ET.fromstring(emit_ui(build(dialog).root_widget))
+        geometry_width = xml.findtext(
+            "./widget/property[@name='geometry']/rect/width"
+        )
+        check_boxes = xml.findall(".//widget[@class='QCheckBox']")
+        wrapped = check_boxes[0].findtext("./property[@name='text']/string")
+        single_line = check_boxes[1].findtext(
+            "./property[@name='text']/string"
+        )
+
+        self.assertEqual(geometry_width, "420")
+        self.assertEqual(
+            wrapped,
+            "Preserve items\nduring processing\noperation",
+        )
+        self.assertEqual(single_line, "Use open schedule")
+
+    def test_multiline_button_translation_is_wrapped_independently(self) -> None:
+        def language_dialog(language: int, text: str) -> Dialog:
+            dialog = replace(
+                make_dialog(
+                    [
+                        (
+                            "Button",
+                            text,
+                            3 | 0x2000,
+                            RectDlu(78, 10, 99, 30),
+                        ),
+                    ]
+                ),
+                rect=RectDlu(0, 0, 180, 60),
+            )
+            key = replace(dialog.key, language=language)
+            control = replace(
+                dialog.controls[0],
+                key=replace(dialog.controls[0].key, dialog=key),
+            )
+            return replace(dialog, key=key, controls=(control,))
+
+        default = language_dialog(
+            1033,
+            "Preserve items during processing operation",
+        )
+        translated = language_dialog(
+            1031,
+            "Retain resources throughout final handling",
+        )
+        multilingual = fuse_dialog_languages((default, translated), 1033)
+        mapper = ControlMapper()
+        mapped = tuple(mapper.map(control) for control in default.controls)
+        layout_mapped = tuple(
+            mapper.map(control) for control in multilingual.layout_dialog.controls
+        )
+        naming = NameResolver().resolve(default, mapped)
+        layout = LayoutBuilder().build(
+            multilingual.layout_dialog,
+            layout_mapped,
+            naming,
+            multilingual.layout_hints,
+        )
+
+        localized = prepare_localized_form(
+            layout.root_widget,
+            multilingual,
+            mapped,
+            naming,
+            form_class="sampleDialog",
+            control_map=None,
+            ui_path=PurePosixPath("sample.ui"),
+        )
+        message = next(
+            item
+            for item in localized.messages
+            if item.source.startswith("Preserve")
+        )
+
+        self.assertEqual(
+            message.source,
+            "Preserve items\nduring processing\noperation",
+        )
+        self.assertEqual(
+            message.translation,
+            "Retain resources\nthroughout final\nhandling",
+        )
 
     def test_text_width_reserve_is_encoded_in_dynamic_font_ruler(self) -> None:
         dialog = make_dialog(
