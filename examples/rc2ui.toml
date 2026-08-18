@@ -1,0 +1,173 @@
+version = 1
+project_root = ".."
+output = "generated-ui"
+include_paths = ["include"]
+default_language = 1033
+rc_encoding = "cp1252"
+strict = false
+layout_mode = "faithful"
+ui_comments = true
+qt_check = "auto"
+qt_font_scale = 1.0
+# qt_preview = "qt-previews"
+
+[defines]
+WIN32 = 1
+
+[[input_groups]]
+rc = ["resources/main.rc", "resources/admin.rc"]
+resources = ["build/application.exe", "build/application.fr-FR.mui"]
+# dialogs = ["IDD_SETTINGS", "#1042"]
+# dialog_regex = ["IDD_REPORT_.*"]
+
+[[input_groups]]
+rc = ["plugins/editor.rc"]
+resources = ["build/editor.dll"]
+
+# Compact exact mappings are convenient for reviewed one-to-one renames.
+[[naming.rules]]
+name = "standard-buttons"
+kind = "control"
+priority = 100
+
+[naming.rules.names]
+IDOK = "okButton"
+IDCANCEL = "cancelButton"
+IDHELP = "helpButton"
+
+# Regex mappings cover whole ID families.
+[[naming.rules]]
+name = "dialogs-from-symbols"
+kind = "dialog"
+id_regex = 'IDD_(?P<name>[A-Z0-9_]+)'
+name_template = "${name}_DIALOG"
+
+[[naming.rules]]
+name = "editors-from-symbols"
+kind = "control"
+id_regex = 'IDC_(?P<name>[A-Z0-9_]+)_EDIT'
+name_template = "${name}_EDIT"
+
+[[naming.rules]]
+name = "login-user-label"
+kind = "control"
+source_regex = 'resources/main\.rc'
+dialog_regex = "IDD_LOGIN"
+id_regex = "IDC_STATIC"
+occurrence = 1
+name_template = "USER_NAME_LABEL"
+priority = 200
+
+[[naming.rules]]
+name = "choice-control-names"
+kind = "control"
+
+[naming.rules.names]
+IDC_CHOICE_PRIMARY = "choiceSelector"
+
+# Reusable widget profiles keep project class metadata out of selectors.
+[[controls.widgets]]
+name = "project-grid"
+qt_class = "Company::GridWidget"
+role = "input"
+header = "company/gridwidget.h"
+extends = "QWidget"
+expands_horizontally = true
+expands_vertically = true
+text_property = "windowTitle"
+
+[controls.widgets.properties]
+displayMode = { enum = "Company::GridWidget::Compact" }
+
+[[controls.widgets]]
+name = "project-editor"
+qt_class = "Company::EditorWidget"
+role = "input"
+header = "company/editorwidget.h"
+extends = "QWidget"
+expands_horizontally = true
+text_property = "text"
+
+[[controls.widgets]]
+name = "radio-button"
+qt_class = "QRadioButton"
+role = "input"
+expands_horizontally = true
+text_property = "text"
+
+[[controls.widgets]]
+name = "choice-selector"
+qt_class = "Example::ChoiceSelector"
+role = "input"
+header = "example/choiceselector.h"
+extends = "QWidget"
+expands_horizontally = true
+
+[[controls.rules]]
+name = "registered-project-grids"
+widget = "project-grid"
+win_class = "MyCompanyGrid"
+priority = 50
+
+[[controls.rules]]
+name = "runtime-mode-options"
+widget = "radio-button"
+win_class = "ProjectPlaceholder"
+id_regex = 'IDC_MODE_.*'
+dialog_regex = 'IDD_.*SETTINGS'
+button_group = "modeButtonGroup"
+runtime_configured = ["checked"]
+priority = 100
+
+[[controls.bindings]]
+name = "settings-project-controls"
+dialog_regex = "IDD_SETTINGS"
+priority = 200
+
+controls = [
+  { win_class = "Edit", id = "IDC_PROJECT_PATH", widget = "project-editor", runtime_configured = ["text"] },
+  { win_class = "MyCompanyGrid", id = "IDC_RESULTS", widget = "project-grid" },
+  { win_class = "ProjectPlaceholder", id = "IDC_MODE_FAST", widget = "radio-button", button_group = "modeButtonGroup" },
+  { win_class = "ProjectPlaceholder", id = "IDC_MODE_SAFE", widget = "radio-button", button_group = "modeButtonGroup" },
+]
+
+# Exact many-to-one project composition. The primary keeps the public name.
+[[controls.compounds]]
+name = "paired-choice-selector"
+widget = "choice-selector"
+primary = { win_class = "LegacyChoice", id = "IDC_CHOICE_PRIMARY" }
+members = [
+  { win_class = "LegacyChoice", id = "IDC_CHOICE_SECONDARY" },
+]
+
+[[semantics.rules]]
+name = "floating-parameters"
+kind = "edit-updown"
+action = "replace"
+dialog_id = "IDD_.*PARAMETERS"
+primary_id = "IDC_.*_(VALUE|FACTOR)"
+member_id = "IDC_.*_SPIN"
+result = "QDoubleSpinBox"
+priority = 100
+
+[semantics.rules.properties]
+minimum = -1000000.0
+maximum = 1000000.0
+decimals = 3
+singleStep = 0.1
+
+[[semantics.rules]]
+name = "runtime-integer-values"
+kind = "edit-updown"
+action = "replace"
+primary_id = "IDC_.*_COUNT"
+member_id = "IDC_.*_SPIN"
+result = "QSpinBox"
+runtime_configured = true
+
+[[semantics.rules]]
+name = "keep-special-editor"
+kind = "edit-updown"
+action = "keep"
+primary_id = "IDC_SPECIAL_VALUE"
+priority = 1000

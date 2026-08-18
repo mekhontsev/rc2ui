@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rc2ui"
+version = "0.1.0.dev0"
+description = "Convert Win32 dialog resources to scalable Qt 6 .ui files"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Dmitry Mekhontsev" }]
+license = { file = "LICENSE" }
+dependencies = []
+classifiers = [
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.scripts]
+rc2ui = "rc2ui.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
