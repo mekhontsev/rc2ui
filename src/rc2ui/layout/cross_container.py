@@ -73,6 +73,10 @@ def _align_sibling_group_children(
         candidates,
         same_row_pairs=same_row_pairs,
         tolerance=tolerance,
+        # Children of different QGroupBox layouts cannot share one Qt cell.
+        # Preserve their strongest common edge instead of approximating a
+        # centre which each independent layout would realize differently.
+        prefer_near_center=False,
     )
     handled: set[tuple[AnchorKind, int, frozenset[int]]] = set()
     for candidate in candidates:

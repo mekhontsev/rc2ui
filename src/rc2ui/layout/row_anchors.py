@@ -18,6 +18,7 @@ def coherent_vertical_anchor_groups(
     same_row_pairs: frozenset[frozenset[int]],
     tolerance: int,
     vertical_separators: list[VisualNode] | None = None,
+    prefer_near_center: bool = True,
 ) -> dict[int, AxisAnchorGroup | None]:
     """Choose one topology-safe anchor for each visual row.
 
@@ -76,7 +77,31 @@ def coherent_vertical_anchor_groups(
                 )
         if not candidates:
             continue
-        _, _, kind, coordinate2 = min(candidates)
+        if prefer_near_center and all(
+            not member.mapped.expands_vertically for member in members
+        ):
+            # QLabel, QLineEdit, QComboBox and similar controls have different
+            # native heights. Hand-authored RC rows often make a neighbouring
+            # edge look fractionally tighter than the intended centre. When
+            # the evidence differs by no more than one DLU, prefer the centre
+            # so Qt can place every fixed-height peer in one shared row cell.
+            best_spread = min(candidate[0] for candidate in candidates)
+            near_best = [
+                candidate
+                for candidate in candidates
+                if candidate[0] <= best_spread + 2
+            ]
+            _, _, kind, coordinate2 = min(
+                near_best,
+                key=lambda candidate: (
+                    candidate[1],
+                    candidate[0],
+                    candidate[2],
+                    candidate[3],
+                ),
+            )
+        else:
+            _, _, kind, coordinate2 = min(candidates)
         group = AxisAnchorGroup(
             kind=kind,
             coordinate2=coordinate2,

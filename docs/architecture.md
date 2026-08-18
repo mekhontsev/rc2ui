@@ -633,6 +633,13 @@ overlap. A tall control cannot join two ordinary rows merely because it overlaps
 both. Group frames are not peer-row evidence. Vertical separators partition row
 inference, and horizontal separators partition column inference.
 
+Fixed-height peers in one Qt grid share a vertical cell when their centre is
+within one DLU of the strongest competing edge anchor. This absorbs small RC
+rounding differences between labels, edits, and combo boxes and keeps their
+centres aligned as native widget heights change with the font. Cross-container
+rows cannot share a cell, so sibling group layouts retain their strongest exact
+edge guide instead.
+
 After proven normalization, every remaining edge is retained exactly. A
 one-DLU interval therefore stays a real grid track instead of disappearing into
 a tolerance.

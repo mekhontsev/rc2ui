@@ -1414,6 +1414,30 @@ class LayoutAndEmitterTests(unittest.TestCase):
         )
         self.assertTrue(all("AlignVCenter" in item.alignment for item in items))
 
+    def test_near_centered_label_and_edit_share_one_vertical_cell(self) -> None:
+        dialog = dense_multiline_dialog()
+
+        result = build(dialog)
+
+        label_anchor = result.anchors_for(30)[1]
+        edit_anchor = result.anchors_for(31)[1]
+        self.assertIsNotNone(label_anchor)
+        self.assertEqual(label_anchor, edit_anchor)
+        self.assertEqual(label_anchor[0], "center")
+        items = {
+            item.widget.object_name: item
+            for item in source_widget_items(result.root_widget.layout)
+            if item.widget is not None
+        }
+        label = items["executionPeriodLabel"]
+        edit = items["executionPeriodEdit"]
+        self.assertEqual(
+            (label.row, label.row_span),
+            (edit.row, edit.row_span),
+        )
+        self.assertIn("AlignVCenter", label.alignment or "")
+        self.assertIn("AlignVCenter", edit.alignment or "")
+
     def test_tall_control_spans_multiple_grid_rows(self) -> None:
         dialog = make_dialog(
             [
