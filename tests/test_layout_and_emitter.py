@@ -1116,6 +1116,36 @@ class LayoutAndEmitterTests(unittest.TestCase):
 
         self.assertGreater(geometry.width, round(dialog.rect.width * 1.75))
 
+    def test_local_gap_affinity_overrides_unrelated_distant_guides(self) -> None:
+        specs = [
+            ("Edit", "", 0, RectDlu(55, 109, 106, 12)),
+            ("Edit", "", 0, RectDlu(55, 125, 106, 12)),
+            ("msctls_updown32", "Spin", 0xB0, RectDlu(93, 54, 10, 12)),
+            ("msctls_updown32", "Spin", 0xB0, RectDlu(93, 70, 11, 12)),
+            ("Button", "Option", 9, RectDlu(95, 34, 55, 12)),
+            ("Static", "Maximum", 0x200, RectDlu(5, 87, 45, 12)),
+            ("Button", "10000", 0x200, RectDlu(53, 87, 37, 12)),
+            ("Static", "unit.", 0x200, RectDlu(95, 87, 21, 12)),
+            ("Button", "10000", 0x200, RectDlu(119, 87, 37, 12)),
+        ]
+        dialog = replace(
+            make_dialog(specs),
+            rect=RectDlu(0, 0, 286, 167),
+        )
+
+        result = build(dialog)
+        first, label, second = (
+            result.rect_for(order) for order in (6, 7, 8)
+        )
+
+        self.assertEqual(first, specs[6][3])
+        self.assertEqual(label, specs[7][3])
+        self.assertEqual(second, specs[8][3])
+        self.assertGreater(
+            label.left - first.right,
+            second.left - label.right,
+        )
+
     def test_single_centered_group_child_remains_centered(self) -> None:
         dialog = make_dialog(
             [

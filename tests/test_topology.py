@@ -110,6 +110,70 @@ class TopologySelectionTests(unittest.TestCase):
         self.assertEqual(result.rect_for(0), item.rect)
         self.assertEqual(result.rejections[0].reasons, ("unanchored",))
 
+    def test_rejects_anchor_shift_that_reverses_local_gap_affinity(self) -> None:
+        items = (
+            TopologyItem(0, RectDlu(53, 87, 37, 12)),
+            TopologyItem(1, RectDlu(95, 87, 21, 12)),
+            TopologyItem(2, RectDlu(119, 87, 37, 12)),
+        )
+        proposals = {
+            0: RectDlu(55, 87, 37, 12),
+            1: RectDlu(94, 87, 21, 12),
+            2: items[2].rect,
+        }
+
+        result = select_topology_preserving_rects(
+            items,
+            proposals,
+            preserve_alignments=False,
+            preserve_containment=False,
+            reject_unanchored=False,
+            preserve_neighbour_gaps=True,
+            neighbour_gap_tolerance=3,
+        )
+        rects = dict(result.rects)
+        left_gap = rects[1].left - rects[0].right
+        right_gap = rects[2].left - rects[1].right
+
+        self.assertGreater(left_gap, right_gap)
+        self.assertIn(
+            "horizontal-gap-affinity",
+            {
+                reason
+                for rejection in result.rejections
+                for reason in rejection.reasons
+            },
+        )
+
+    def test_accepts_coherent_row_translation_with_unchanged_gaps(self) -> None:
+        items = (
+            TopologyItem(0, RectDlu(53, 87, 37, 12)),
+            TopologyItem(1, RectDlu(95, 87, 21, 12)),
+            TopologyItem(2, RectDlu(119, 87, 37, 12)),
+        )
+        proposals = {
+            item.order: RectDlu(
+                item.rect.x + 2,
+                item.rect.y,
+                item.rect.width,
+                item.rect.height,
+            )
+            for item in items
+        }
+
+        result = select_topology_preserving_rects(
+            items,
+            proposals,
+            preserve_alignments=False,
+            preserve_containment=False,
+            reject_unanchored=False,
+            preserve_neighbour_gaps=True,
+            neighbour_gap_tolerance=3,
+        )
+
+        self.assertEqual(dict(result.rects), proposals)
+        self.assertEqual(result.rejections, ())
+
 
 if __name__ == "__main__":
     unittest.main()

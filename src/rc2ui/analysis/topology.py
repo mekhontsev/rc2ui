@@ -9,6 +9,7 @@ from rc2ui.domain.geometry import RectDlu
 _ORDER_TOLERANCE_DLU = 1
 _CONTAINMENT_TOLERANCE_DLU = 1
 _UNANCHORED_CORRECTION_TOLERANCE_DLU = 3
+_GAP_AFFINITY_EVIDENCE_DLU = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +119,56 @@ class _ContainmentConstraint:
         )
 
 
-_Constraint = _OrderConstraint | _AlignmentConstraint | _ContainmentConstraint
+@dataclass(frozen=True, slots=True)
+class _NeighbourGapConstraint:
+    before: int
+    after: int
+    source_gap: int
+    allowed_delta: int
+
+    @property
+    def orders(self) -> tuple[int, int]:
+        return self.before, self.after
+
+    @property
+    def reason(self) -> str:
+        return "horizontal-gap"
+
+    def is_violated(self, rects: dict[int, RectDlu]) -> bool:
+        gap = rects[self.after].left - rects[self.before].right
+        return abs(gap - self.source_gap) > self.allowed_delta
+
+
+@dataclass(frozen=True, slots=True)
+class _GapAffinityConstraint:
+    left: int
+    middle: int
+    right: int
+    closer_side: Literal["left", "right"]
+
+    @property
+    def orders(self) -> tuple[int, int, int]:
+        return self.left, self.middle, self.right
+
+    @property
+    def reason(self) -> str:
+        return "horizontal-gap-affinity"
+
+    def is_violated(self, rects: dict[int, RectDlu]) -> bool:
+        left_gap = rects[self.middle].left - rects[self.left].right
+        right_gap = rects[self.right].left - rects[self.middle].right
+        if self.closer_side == "left":
+            return left_gap >= right_gap
+        return right_gap >= left_gap
+
+
+_Constraint = (
+    _OrderConstraint
+    | _AlignmentConstraint
+    | _ContainmentConstraint
+    | _NeighbourGapConstraint
+    | _GapAffinityConstraint
+)
 
 
 def select_topology_preserving_rects(
@@ -134,6 +184,8 @@ def select_topology_preserving_rects(
     preserve_containment: bool = True,
     reject_unanchored: bool = True,
     order_requires_orthogonal_overlap: bool = False,
+    preserve_neighbour_gaps: bool = False,
+    neighbour_gap_tolerance: int = 3,
 ) -> TopologySelection:
     """Accept a local subset that preserves default relationships.
 
@@ -148,6 +200,8 @@ def select_topology_preserving_rects(
     unknown = set(proposals) - defaults.keys()
     if unknown:
         raise ValueError(f"proposals contain unknown orders: {sorted(unknown)}")
+    if neighbour_gap_tolerance < 0:
+        raise ValueError("neighbour gap tolerance cannot be negative")
 
     accepted = {
         order: proposals.get(order, default_rect)
@@ -162,6 +216,8 @@ def select_topology_preserving_rects(
         order_requires_orthogonal_overlap=(
             order_requires_orthogonal_overlap
         ),
+        preserve_neighbour_gaps=preserve_neighbour_gaps,
+        neighbour_gap_tolerance=neighbour_gap_tolerance,
     )
     rejected: dict[int, tuple[set[str], set[int]]] = {}
 
@@ -244,6 +300,8 @@ def _build_constraints(
     preserve_alignments: bool,
     preserve_containment: bool,
     order_requires_orthogonal_overlap: bool,
+    preserve_neighbour_gaps: bool,
+    neighbour_gap_tolerance: int,
 ) -> tuple[_Constraint, ...]:
     by_order = {item.order: item for item in items}
     parents = {
@@ -251,6 +309,14 @@ def _build_constraints(
         for item in items
     }
     constraints: list[_Constraint] = []
+
+    if preserve_neighbour_gaps:
+        constraints.extend(
+            _horizontal_neighbour_constraints(
+                items,
+                tolerance=neighbour_gap_tolerance,
+            )
+        )
 
     if preserve_containment and bounds is not None:
         for item in items:
@@ -305,6 +371,131 @@ def _build_constraints(
                 if order is not None:
                     constraints.append(order)
     return tuple(constraints)
+
+
+def _horizontal_neighbour_constraints(
+    items: tuple[TopologyItem, ...],
+    *,
+    tolerance: int,
+) -> tuple[_NeighbourGapConstraint | _GapAffinityConstraint, ...]:
+    """Protect local row spacing from unrelated global anchor votes."""
+
+    controls = tuple(item for item in items if not item.is_container)
+    maximum_gap = max(4, tolerance * 4)
+    pair_constraints: dict[tuple[int, int], _NeighbourGapConstraint] = {}
+    affinity_constraints: list[_GapAffinityConstraint] = []
+    for middle in controls:
+        left = _nearest_horizontal_neighbour(
+            middle,
+            controls,
+            side="left",
+            row_tolerance=tolerance,
+        )
+        right = _nearest_horizontal_neighbour(
+            middle,
+            controls,
+            side="right",
+            row_tolerance=tolerance,
+        )
+        left_gap = (
+            middle.rect.left - left.rect.right if left is not None else None
+        )
+        right_gap = (
+            right.rect.left - middle.rect.right if right is not None else None
+        )
+        if left is not None and left_gap is not None and left_gap <= maximum_gap:
+            pair_constraints[(left.order, middle.order)] = (
+                _NeighbourGapConstraint(
+                    before=left.order,
+                    after=middle.order,
+                    source_gap=left_gap,
+                    allowed_delta=tolerance,
+                )
+            )
+        if (
+            right is not None
+            and right_gap is not None
+            and right_gap <= maximum_gap
+        ):
+            pair_constraints[(middle.order, right.order)] = (
+                _NeighbourGapConstraint(
+                    before=middle.order,
+                    after=right.order,
+                    source_gap=right_gap,
+                    allowed_delta=tolerance,
+                )
+            )
+        if (
+            left is None
+            or right is None
+            or left_gap is None
+            or right_gap is None
+            or left_gap > maximum_gap
+            or right_gap > maximum_gap
+            or abs(left_gap - right_gap) < _GAP_AFFINITY_EVIDENCE_DLU
+        ):
+            continue
+        affinity_constraints.append(
+            _GapAffinityConstraint(
+                left=left.order,
+                middle=middle.order,
+                right=right.order,
+                closer_side="left" if left_gap < right_gap else "right",
+            )
+        )
+    return tuple(pair_constraints.values()) + tuple(affinity_constraints)
+
+
+def _nearest_horizontal_neighbour(
+    middle: TopologyItem,
+    items: tuple[TopologyItem, ...],
+    *,
+    side: Literal["left", "right"],
+    row_tolerance: int,
+) -> TopologyItem | None:
+    candidates = [
+        item
+        for item in items
+        if item.order != middle.order
+        and _same_visual_row(item.rect, middle.rect, row_tolerance)
+        and (
+            item.rect.right <= middle.rect.left
+            if side == "left"
+            else item.rect.left >= middle.rect.right
+        )
+    ]
+    if not candidates:
+        return None
+    if side == "left":
+        return min(
+            candidates,
+            key=lambda item: (
+                middle.rect.left - item.rect.right,
+                abs(item.rect.center_y - middle.rect.center_y),
+                -item.rect.left,
+                item.order,
+            ),
+        )
+    return min(
+        candidates,
+        key=lambda item: (
+            item.rect.left - middle.rect.right,
+            abs(item.rect.center_y - middle.rect.center_y),
+            item.rect.left,
+            item.order,
+        ),
+    )
+
+
+def _same_visual_row(
+    left: RectDlu,
+    right: RectDlu,
+    tolerance: int,
+) -> bool:
+    return (
+        min(left.bottom, right.bottom) > max(left.top, right.top)
+        and abs(left.center_y - right.center_y) <= tolerance
+    )
 
 
 def _orthogonal_projection_overlaps(

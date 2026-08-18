@@ -15,6 +15,8 @@ _RADICAL_VECTOR_DRIFT = 0.30
 _SOURCE_ANCHOR_TOLERANCE_DLU = 3
 _MINIMUM_ANCHOR_GROUP = 2
 _RUNTIME_ANCHOR_TOLERANCE = 0.015
+_LOCAL_GAP_MAXIMUM_DLU = 12
+_LOCAL_GAP_AFFINITY_EVIDENCE_DLU = 2
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,6 +111,13 @@ def analyze_source_geometry(
         diagnostics.extend(_order_diagnostics(current_pairs, current_form, path))
         diagnostics.extend(
             _anchor_diagnostics(
+                current_pairs,
+                current_form,
+                path,
+            )
+        )
+        diagnostics.extend(
+            _local_gap_affinity_diagnostics(
                 current_pairs,
                 current_form,
                 path,
@@ -944,6 +953,105 @@ def _runtime_gap(before: _Rect, after: _Rect, *, axis: str) -> float:
         after.left - before.right
         if axis == "horizontal"
         else after.top - before.bottom
+    )
+
+
+def _local_gap_affinity_diagnostics(
+    pairs: list[_GeometryPair],
+    runtime_form: _Rect,
+    path: Path,
+) -> list[dict[str, str]]:
+    """Detect a local caption becoming attached to the wrong neighbour."""
+
+    ordinary = [
+        pair
+        for pair in pairs
+        if pair.separator_orientation is None
+        and pair.qt_class != "QGroupBox"
+        and pair.source.width > 0
+        and pair.source.height > 0
+    ]
+    changed: list[str] = []
+    for middle in ordinary:
+        peers = [
+            pair
+            for pair in ordinary
+            if pair is not middle
+            and pair.source_parent_name == middle.source_parent_name
+            and _runtime_layers_comparable(pair, middle)
+            and _same_source_row(pair.source, middle.source)
+        ]
+        left = _nearest_source_neighbour(middle, peers, side="left")
+        right = _nearest_source_neighbour(middle, peers, side="right")
+        if left is None or right is None:
+            continue
+        source_left_gap = middle.source.left - left.source.right
+        source_right_gap = right.source.left - middle.source.right
+        if (
+            max(source_left_gap, source_right_gap) > _LOCAL_GAP_MAXIMUM_DLU
+            or abs(source_left_gap - source_right_gap)
+            < _LOCAL_GAP_AFFINITY_EVIDENCE_DLU
+        ):
+            continue
+        runtime_left_gap = middle.runtime.left - left.runtime.right
+        runtime_right_gap = right.runtime.left - middle.runtime.right
+        source_closer_left = source_left_gap < source_right_gap
+        runtime_closer_left = runtime_left_gap < runtime_right_gap
+        if source_closer_left == runtime_closer_left and (
+            runtime_left_gap != runtime_right_gap
+        ):
+            continue
+        changed.append(
+            (
+                f"{left.name!r}/{middle.name!r}/{right.name!r} "
+                f"RC gaps {source_left_gap:g}/{source_right_gap:g}, "
+                f"runtime gaps {runtime_left_gap:g}/{runtime_right_gap:g}"
+            )
+        )
+    if not changed:
+        return []
+    return [
+        diagnostic(
+            "qt.source-gap-affinity-changed",
+            "error",
+            (
+                f"{len(changed)} local RC neighbour relation(s) changed: "
+                + "; ".join(changed[:6])
+                + f" at {_runtime_size(runtime_form)}"
+            ),
+            path,
+        )
+    ]
+
+
+def _nearest_source_neighbour(
+    middle: _GeometryPair,
+    peers: list[_GeometryPair],
+    *,
+    side: str,
+) -> _GeometryPair | None:
+    candidates = [
+        pair
+        for pair in peers
+        if (
+            pair.source.right <= middle.source.left
+            if side == "left"
+            else pair.source.left >= middle.source.right
+        )
+    ]
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda pair: (
+            (
+                middle.source.left - pair.source.right
+                if side == "left"
+                else pair.source.left - middle.source.right
+            ),
+            abs(pair.source.center_y - middle.source.center_y),
+            pair.name,
+        ),
     )
 
 

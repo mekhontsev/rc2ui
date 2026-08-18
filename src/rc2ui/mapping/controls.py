@@ -13,6 +13,8 @@ from rc2ui.mapping.text_layout import wrap_control_text_dlu
 from rc2ui.qt.model import QtEnum, QtProperty, QtSize, QtSizePolicy, QtString
 
 
+WS_CHILD = 0x40000000
+WS_VISIBLE = 0x10000000
 WS_DISABLED = 0x08000000
 
 BS_TYPEMASK = 0x0000000F
@@ -701,24 +703,20 @@ def _with_multiline_button_text(mapped: MappedControl) -> MappedControl:
 
 
 def _with_common_properties(mapped: MappedControl) -> MappedControl:
-    if not mapped.control.style & WS_DISABLED:
+    properties = list(mapped.properties)
+    if mapped.control.style & WS_DISABLED:
+        properties.append(QtProperty("enabled", False))
+    # Compiled child controls always carry WS_CHILD. Its presence lets us
+    # distinguish an explicit NOT WS_VISIBLE from the abbreviated styles used
+    # by source-only fixtures and project overrides.
+    if (
+        mapped.control.style & WS_CHILD
+        and not mapped.control.style & WS_VISIBLE
+    ):
+        properties.append(QtProperty("visible", False))
+    if len(properties) == len(mapped.properties):
         return mapped
-    return MappedControl(
-        control=mapped.control,
-        qt_class=mapped.qt_class,
-        role=mapped.role,
-        properties=mapped.properties + (QtProperty("enabled", False),),
-        expands_horizontally=mapped.expands_horizontally,
-        expands_vertically=mapped.expands_vertically,
-        warning=mapped.warning,
-        custom_widget=mapped.custom_widget,
-        separator_orientation=mapped.separator_orientation,
-        button_group=mapped.button_group,
-        mapping_rule=mapped.mapping_rule,
-        mapping_rule_key=mapped.mapping_rule_key,
-        runtime_configured=mapped.runtime_configured,
-        multiline_text=mapped.multiline_text,
-    )
+    return replace(mapped, properties=tuple(properties))
 
 
 def _thin_frame_orientation(control: Control) -> SeparatorOrientation | None:

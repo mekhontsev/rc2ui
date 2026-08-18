@@ -648,17 +648,42 @@ class LayoutBuilder:
             )
             for node in nodes
         }
-        geometry_nodes = [
-            replace(
+        anchored_rects = {
+            node.order: _anchored_rect(
                 node,
-                rect=_anchored_rect(
-                    node,
-                    horizontal_groups[node.order],
-                    vertical_groups[node.order],
-                ),
+                horizontal_groups[node.order],
+                vertical_groups[node.order],
             )
             for node in nodes
-        ]
+        }
+        horizontal_rects, rejected_horizontal_anchors = (
+            _gap_preserving_horizontal_rects(
+                nodes,
+                anchored_rects,
+                tolerance=self.coordinate_tolerance,
+            )
+        )
+        for node in nodes:
+            if node.order not in rejected_horizontal_anchors:
+                continue
+            for order in node.orders:
+                _horizontal, vertical = self._selected_anchors[order]
+                self._selected_anchors[order] = (None, vertical)
+        geometry_nodes = []
+        for node in nodes:
+            anchored = anchored_rects[node.order]
+            horizontal = horizontal_rects[node.order]
+            geometry_nodes.append(
+                replace(
+                    node,
+                    rect=RectDlu(
+                        horizontal.x,
+                        anchored.y,
+                        horizontal.width,
+                        anchored.height,
+                    ),
+                )
+            )
         for node in geometry_nodes:
             # A runtime-alternative wrapper represents several controls whose
             # slightly different source rectangles are meaningful evidence.
@@ -1082,6 +1107,50 @@ def _anchored_rect(
     x = _aligned_start(node.rect.x, node.rect.width, horizontal_group)
     y = _aligned_start(node.rect.y, node.rect.height, vertical_group)
     return RectDlu(x, y, node.rect.width, node.rect.height)
+
+
+def _gap_preserving_horizontal_rects(
+    nodes: list[VisualNode],
+    anchored_rects: dict[int, RectDlu],
+    *,
+    tolerance: int,
+) -> tuple[dict[int, RectDlu], frozenset[int]]:
+    """Reject global anchor snaps that corrupt a local horizontal chain."""
+
+    participants = tuple(
+        node
+        for node in nodes
+        if node.mapped.role
+        not in {ControlRole.GROUP, ControlRole.DECORATION}
+    )
+    if len(participants) < 2:
+        return dict(anchored_rects), frozenset()
+    selection = select_topology_preserving_rects(
+        tuple(
+            TopologyItem(order=node.order, rect=node.rect)
+            for node in participants
+        ),
+        {
+            node.order: RectDlu(
+                anchored_rects[node.order].x,
+                node.rect.y,
+                node.rect.width,
+                node.rect.height,
+            )
+            for node in participants
+        },
+        order_axes=("horizontal",),
+        preserve_alignments=False,
+        preserve_containment=False,
+        reject_unanchored=False,
+        order_requires_orthogonal_overlap=True,
+        preserve_neighbour_gaps=True,
+        neighbour_gap_tolerance=tolerance,
+    )
+    result = dict(anchored_rects)
+    for order, rect in selection.rects:
+        result[order] = rect
+    return result, frozenset(item.order for item in selection.rejections)
 
 
 def _anchor_reference(

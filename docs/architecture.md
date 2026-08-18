@@ -260,6 +260,7 @@ large, including with only two variants, when it preserves:
 
 - clear horizontal and vertical partial order;
 - distant shared left, right, top, bottom, and center anchors;
+- immediate same-row neighbour gaps and clear left/right gap affinity;
 - source group-box containment;
 - dialog bounds;
 - control extents from the selected default language.
@@ -619,6 +620,14 @@ share an edge or center. The anchor analyzer clusters compatible coordinates,
 but a candidate anchor is accepted only if it does not bridge adjacent source
 rows, cross a region boundary, or contradict stronger edge evidence.
 
+Global anchor clusters are proposals rather than commands. A second local pass
+builds short same-row neighbour chains from non-overlapping controls. It rejects
+only the conflicting horizontal snaps when they change a small source gap too
+far or reverse clear affinity: for example, a unit caption that was closer to
+the field on its right cannot become attached to the field on its left.
+Coherent translation of the entire chain remains valid, so this constraint does
+not freeze responsive layout geometry.
+
 Row inference uses coherent components rather than unconstrained transitive
 overlap. A tall control cannot join two ordinary rows merely because it overlaps
 both. Group frames are not peer-row evidence. Vertical separators partition row
@@ -746,6 +755,10 @@ retains meaningful internal subrectangles. Every control retains its source
 identity and alternative-state membership. The converter does not choose the
 visible state.
 
+Compiled child controls without `WS_VISIBLE` are emitted with `visible=false`.
+They remain present and named in the `.ui`, allowing application code to show
+them later without exposing a runtime-only state initially.
+
 Partial overlap that lacks layer structure remains a warning. Resource order is
 reported as z-order evidence but does not rearrange non-overlapping controls or
 container ownership.
@@ -862,6 +875,7 @@ worker records root-relative and local geometry for nested widgets and checks:
 - generator-selected two-or-more-control anchor groups;
 - source group parent;
 - separator orientation and side membership;
+- local same-row neighbour-gap affinity;
 - source-gap preservation and growth.
 
 After baseline checks, the worker increases the form font by a twofold factor
@@ -876,7 +890,8 @@ does not hide ordinary overlaps.
 Text-clipping diagnostics include actual and required content sizes. Moderate
 platform-dependent drift and an undersized serialized Designer canvas are
 warnings. Radical displacement, size collapse, order inversion, lost anchor,
-lost parent, collapsed elastic gap, or separator crossing is an error.
+lost parent, reversed local gap affinity, collapsed elastic gap, or separator
+crossing is an error.
 
 ### Reports and previews
 
@@ -995,6 +1010,7 @@ qt.load-error
 qt.runtime-error
 qt.clipped-text
 qt.unexpected-overlap
+qt.source-gap-affinity-changed
 qt.font-height-clipped
 qt.font-order-changed
 ```

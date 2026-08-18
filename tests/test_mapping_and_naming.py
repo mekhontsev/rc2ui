@@ -13,6 +13,7 @@ from rc2ui.domain.resource_id import ResourceId
 from rc2ui.mapping.controls import ControlMapper
 from rc2ui.naming.map import NamingMap
 from rc2ui.naming.resolver import NameResolver, NameSource, semantic_base
+from rc2ui.qt.model import QtProperty
 from tests.resource_fixtures import res_record, standard_dialog_payload
 
 
@@ -129,6 +130,46 @@ class MappingAndNamingTests(unittest.TestCase):
         self.assertEqual(mapped[0].qt_class, "QLabel")
         self.assertEqual(mapped[1].qt_class, "QLineEdit")
         self.assertTrue(mapped[1].expands_horizontally)
+
+    def test_compiled_control_with_not_visible_starts_hidden(self) -> None:
+        dialog = sample_dialog()
+        hidden = replace(
+            dialog.controls[1],
+            class_name="Button",
+            text="Runtime option",
+            style=0x40000000 | 0x00000003,
+        )
+
+        mapped = ControlMapper().map(hidden)
+
+        self.assertIn(QtProperty("visible", False), mapped.properties)
+
+    def test_visible_compiled_control_and_short_source_style_stay_visible(
+        self,
+    ) -> None:
+        dialog = sample_dialog()
+        controls = (
+            replace(
+                dialog.controls[1],
+                class_name="Button",
+                text="Visible option",
+                style=0x40000000 | 0x10000000 | 0x00000003,
+            ),
+            replace(
+                dialog.controls[1],
+                class_name="Button",
+                text="Source fixture",
+                style=0x00000003,
+            ),
+        )
+
+        for control in controls:
+            with self.subTest(text=control.text):
+                mapped = ControlMapper().map(control)
+                self.assertNotIn(
+                    QtProperty("visible", False),
+                    mapped.properties,
+                )
 
     def test_vertical_trackbar_preserves_its_tick_width(self) -> None:
         dialog = sample_dialog()

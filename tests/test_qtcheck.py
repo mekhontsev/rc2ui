@@ -4,10 +4,13 @@ import json
 import os
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
 from rc2ui.domain.diagnostics import Diagnostic, Severity
+from rc2ui.domain.dialog import DialogFont
+from rc2ui.domain.geometry import RectDlu
 from rc2ui.layout.infer import LayoutBuilder
 from rc2ui.mapping.controls import ControlMapper
 from rc2ui.naming.resolver import NameResolver
@@ -34,7 +37,7 @@ from rc2ui.qtcheck.summary import (
     summarize_diagnostics,
 )
 from rc2ui.qtcheck.ui_transform import prepare_ui_xml
-from tests.test_layout_and_emitter import dense_multiline_dialog
+from tests.test_layout_and_emitter import dense_multiline_dialog, make_dialog
 from tests.test_mapping_and_naming import sample_dialog
 
 
@@ -764,6 +767,88 @@ class QtCheckTests(unittest.TestCase):
             )
         )
 
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_distant_guides_cannot_reverse_runtime_gap_affinity(self) -> None:
+        specs = [
+            ("Edit", "", 0, RectDlu(55, 10, 106, 12)),
+            ("Edit", "", 0, RectDlu(55, 25, 106, 12)),
+            ("msctls_updown32", "Spin", 0xB0, RectDlu(93, 43, 10, 12)),
+            ("msctls_updown32", "Spin", 0xB0, RectDlu(93, 58, 11, 12)),
+            ("Button", "Option", 9, RectDlu(95, 73, 55, 12)),
+            ("Static", "Maximum", 1, RectDlu(5, 87, 45, 12)),
+            ("Button", "10000", 0x200, RectDlu(53, 87, 37, 12)),
+            ("Static", "unit.", 1, RectDlu(95, 87, 21, 12)),
+            ("Button", "10000", 0x200, RectDlu(119, 87, 37, 12)),
+        ]
+        dialog = replace(
+            make_dialog(specs),
+            rect=RectDlu(0, 0, 180, 110),
+            font=DialogFont(9, "Arial"),
+        )
+        mapped = tuple(
+            ControlMapper().map(control) for control in dialog.controls
+        )
+        naming = NameResolver().resolve(dialog, mapped)
+        generated = LayoutBuilder().build(dialog, mapped, naming)
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            ui = root / "sample.ui"
+            report = root / "report.json"
+            ui.write_text(emit_ui(generated.root_widget), encoding="utf-8")
+            reference = FormGeometryReference(
+                rect_dlu=(0, 0, 180, 110),
+                layout_rect_dlu=(
+                    generated.layout_bounds.x,
+                    generated.layout_bounds.y,
+                    generated.layout_bounds.width,
+                    generated.layout_bounds.height,
+                ),
+                controls=tuple(
+                    ControlGeometryReference(
+                        object_name=naming.for_order(control.order).object_name,
+                        rect_dlu=(
+                            control.rect.x,
+                            control.rect.y,
+                            control.rect.width,
+                            control.rect.height,
+                        ),
+                        layout_rect_dlu=(
+                            generated.rect_for(control.order).x,
+                            generated.rect_for(control.order).y,
+                            generated.rect_for(control.order).width,
+                            generated.rect_for(control.order).height,
+                        ),
+                        qt_class=mapped[control.order].qt_class,
+                        horizontal_anchor=(
+                            generated.anchors_for(control.order)[0]
+                        ),
+                        vertical_anchor=(
+                            generated.anchors_for(control.order)[1]
+                        ),
+                    )
+                    for control in dialog.controls
+                ),
+            )
+
+            run_qt_checks(
+                (ui,),
+                report_path=report,
+                required=True,
+                geometry_references={ui: reference},
+            )
+            form = json.loads(report.read_text(encoding="utf-8"))["forms"][0]
+
+        self.assertFalse(
+            any(
+                item["code"] == "qt.source-gap-affinity-changed"
+                for item in form["diagnostics"]
+            )
+        )
+
     def test_runner_passes_source_geometry_to_worker(self) -> None:
         captured: dict[str, object] = {}
 
@@ -1445,6 +1530,75 @@ class QtCheckTests(unittest.TestCase):
 
         self.assertFalse(
             any(item["code"].startswith("qt.source-gap-") for item in diagnostics)
+        )
+
+    def test_source_geometry_reports_reversed_local_gap_affinity(self) -> None:
+        reference = _reference(
+            (
+                {"object_name": "firstValue", "rect_dlu": [53, 40, 37, 12]},
+                {"object_name": "unitLabel", "rect_dlu": [95, 40, 21, 12]},
+                {"object_name": "secondValue", "rect_dlu": [119, 40, 37, 12]},
+            )
+        )
+        diagnostics = analyze_source_geometry(
+            [
+                _snapshot(
+                    {
+                        "firstValue": [106, 80, 74, 24],
+                        "unitLabel": [184, 80, 42, 24],
+                        "secondValue": [238, 80, 74, 24],
+                    }
+                )
+            ],
+            reference,
+            path=Path("sample.ui"),
+        )
+
+        [affinity] = [
+            item
+            for item in diagnostics
+            if item["code"] == "qt.source-gap-affinity-changed"
+        ]
+        self.assertEqual(affinity["severity"], "error")
+        self.assertIn("firstValue", affinity["message"])
+        self.assertIn("RC gaps 5/3", affinity["message"])
+        self.assertIn("runtime gaps 4/12", affinity["message"])
+
+    def test_source_geometry_accepts_preserved_local_gap_affinity(self) -> None:
+        diagnostics = analyze_source_geometry(
+            [
+                _snapshot(
+                    {
+                        "firstValue": [106, 80, 74, 24],
+                        "unitLabel": [190, 80, 42, 24],
+                        "secondValue": [238, 80, 74, 24],
+                    }
+                )
+            ],
+            _reference(
+                (
+                    {
+                        "object_name": "firstValue",
+                        "rect_dlu": [53, 40, 37, 12],
+                    },
+                    {
+                        "object_name": "unitLabel",
+                        "rect_dlu": [95, 40, 21, 12],
+                    },
+                    {
+                        "object_name": "secondValue",
+                        "rect_dlu": [119, 40, 37, 12],
+                    },
+                )
+            ),
+            path=Path("sample.ui"),
+        )
+
+        self.assertFalse(
+            any(
+                item["code"] == "qt.source-gap-affinity-changed"
+                for item in diagnostics
+            )
         )
 
     def test_source_geometry_does_not_compare_different_runtime_layers(self) -> None:

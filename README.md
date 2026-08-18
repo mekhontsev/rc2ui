@@ -267,6 +267,8 @@ The central invariants are:
   conversion and resize;
 - shared left, right, top, bottom, and center anchors remain shared, including
   across distant rows or columns;
+- a short same-row chain keeps both its local neighbour gaps and which side a
+  middle caption is visibly closer to;
 - source gaps remain present and participate in resize;
 - small manual coordinate errors may be normalized only when stronger
   topology evidence supports the correction;
@@ -404,6 +406,7 @@ font dynamically, and checks:
 - expansion behavior and source-gap participation;
 - source-relative horizontal and vertical ordering;
 - generator-selected anchors and group parents;
+- local same-row gap affinity, so a caption cannot attach to the wrong field;
 - separator sides and runtime-alternative exclusions;
 - text height and ordering after a twofold font increase;
 - normalized spatial drift and size collapse against report geometry.
