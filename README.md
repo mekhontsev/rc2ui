@@ -302,7 +302,9 @@ rows also prefer a `QVBoxLayout` of `QHBoxLayout` rows. Row proportions are
 stored on the participating widgets' size policies. A simple row may retain a
 stretch vector of at most five entries so its gaps participate in resize;
 longer box-layout lists are never emitted. Only short grid vectors used by
-margin wrappers or genuinely local grids remain.
+margin wrappers or genuinely local grids remain. As a final fallback, every
+grid is coarsened to at most five logical rows and five logical columns, so a
+`simplified` file cannot contain an unbounded coordinate-track list.
 
 Every candidate must preserve pairwise left/right and above/below order,
 overlap, and source-proven shared boundaries. Outer margins and meaningful gaps

@@ -11,7 +11,7 @@ from rc2ui.domain.diagnostics import Severity
 from rc2ui.domain.geometry import RectDlu
 from rc2ui.layout.simplify import editability_score, simplify_form
 from rc2ui.qt.emitter import emit_ui
-from rc2ui.qt.model import QtWidget
+from rc2ui.qt.model import QtLayout, QtLayoutItem, QtWidget
 from rc2ui.qtcheck.discovery import discover_qt_binding
 from rc2ui.qtcheck.runner import run_qt_checks
 from rc2ui.validation.ui_xml import validate_ui_xml
@@ -236,6 +236,54 @@ class SimplifiedLayoutTests(unittest.TestCase):
             ],
             ["40"] * 6,
         )
+
+    def test_complex_fallback_grid_is_capped_at_five_tracks(self) -> None:
+        root = QtWidget(
+            "QDialog",
+            "sampleDialog",
+            layout=QtLayout(
+                "QGridLayout",
+                "denseGrid",
+                tuple(
+                    QtLayoutItem(
+                        widget=QtWidget("QWidget", f"layer{index}"),
+                        row=index,
+                        column=index,
+                        row_span=5,
+                        column_span=5,
+                    )
+                    for index in range(6)
+                ),
+                stretch=tuple(range(10, 110, 10)),
+                row_stretch=tuple(range(10, 110, 10)),
+                minimum_widths=tuple(range(10, 110, 10)),
+                minimum_heights=tuple(range(10, 110, 10)),
+            ),
+        )
+
+        simplified = simplify_form(root)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+
+        self.assertIn("grid-track-coarsening:1", simplified.transformations)
+        for layout in xml.findall(".//layout[@class='QGridLayout']"):
+            for name in (
+                "columnstretch",
+                "rowstretch",
+                "columnminimumwidth",
+                "rowminimumheight",
+            ):
+                value = layout.get(name)
+                if value is not None:
+                    self.assertLessEqual(len(value.split(",")), 5)
+            for item in layout.findall("./item"):
+                self.assertLess(
+                    int(item.get("column", "0")),
+                    5,
+                )
+                self.assertLess(
+                    int(item.get("row", "0")),
+                    5,
+                )
 
     def test_partial_overlap_keeps_faithful_region(self) -> None:
         faithful = build(

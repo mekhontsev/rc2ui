@@ -17,6 +17,7 @@ from rc2ui.qt.model import (
 
 _ROW_BOUNDARY_TOLERANCE = 1.0
 _MAX_LAYOUT_STRETCH_ITEMS = 5
+_MAX_DESIGNER_GRID_TRACKS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -190,9 +191,15 @@ def simplify_form(root_widget: QtWidget) -> SimplificationResult:
     """Create a Designer-oriented form without mutating faithful planning."""
 
     simplifier = _Simplifier(_object_names(root_widget))
+    simplified, coarsened_grids = _coarsen_widget_grids(
+        simplifier.widget(root_widget)
+    )
+    if coarsened_grids:
+        simplifier.simplified_regions += coarsened_grids
+        simplifier.transformations["grid-track-coarsening"] += coarsened_grids
     simplified = _retain_root_width_ruler(
         root_widget,
-        simplifier.widget(root_widget),
+        simplified,
         names=simplifier.names,
     )
     return SimplificationResult(
@@ -205,6 +212,129 @@ def simplify_form(root_widget: QtWidget) -> SimplificationResult:
             for name, count in sorted(simplifier.transformations.items())
         ),
     )
+
+
+def _coarsen_widget_grids(widget: QtWidget) -> tuple[QtWidget, int]:
+    children: list[QtWidget] = []
+    count = 0
+    for child in widget.children:
+        replacement, child_count = _coarsen_widget_grids(child)
+        children.append(replacement)
+        count += child_count
+    layout = widget.layout
+    if layout is not None:
+        layout, layout_count = _coarsen_layout_grids(layout)
+        count += layout_count
+    return replace(widget, children=tuple(children), layout=layout), count
+
+
+def _coarsen_layout_grids(layout: QtLayout) -> tuple[QtLayout, int]:
+    items: list[QtLayoutItem] = []
+    count = 0
+    for item in layout.items:
+        widget = item.widget
+        child_layout = item.layout
+        if widget is not None:
+            widget, child_count = _coarsen_widget_grids(widget)
+            count += child_count
+        elif child_layout is not None:
+            child_layout, child_count = _coarsen_layout_grids(child_layout)
+            count += child_count
+        items.append(replace(item, widget=widget, layout=child_layout))
+    layout = replace(layout, items=tuple(items))
+    if layout.class_name != "QGridLayout":
+        return layout, count
+
+    rows, columns = _grid_shape(layout)
+    target_rows = min(rows, _MAX_DESIGNER_GRID_TRACKS)
+    target_columns = min(columns, _MAX_DESIGNER_GRID_TRACKS)
+    if target_rows == rows and target_columns == columns:
+        return layout, count
+
+    items = [
+        replace(
+            item,
+            row=_coarsened_track_start(item.row or 0, rows, target_rows),
+            column=_coarsened_track_start(
+                item.column or 0,
+                columns,
+                target_columns,
+            ),
+            row_span=_coarsened_track_span(
+                item.row or 0,
+                item.row_span,
+                rows,
+                target_rows,
+            ),
+            column_span=_coarsened_track_span(
+                item.column or 0,
+                item.column_span,
+                columns,
+                target_columns,
+            ),
+        )
+        for item in layout.items
+    ]
+    return (
+        replace(
+            layout,
+            items=tuple(items),
+            stretch=_coarsened_track_weights(
+                layout.stretch,
+                columns,
+                target_columns,
+            ),
+            row_stretch=_coarsened_track_weights(
+                layout.row_stretch,
+                rows,
+                target_rows,
+            ),
+            minimum_widths=_coarsened_track_weights(
+                layout.minimum_widths,
+                columns,
+                target_columns,
+            ),
+            minimum_heights=_coarsened_track_weights(
+                layout.minimum_heights,
+                rows,
+                target_rows,
+            ),
+        ),
+        count + 1,
+    )
+
+
+def _coarsened_track_start(start: int, count: int, target: int) -> int:
+    return min(target - 1, start * target // count)
+
+
+def _coarsened_track_span(
+    start: int,
+    span: int,
+    count: int,
+    target: int,
+) -> int:
+    replacement_start = _coarsened_track_start(start, count, target)
+    end = min(count, start + span)
+    replacement_end = min(
+        target,
+        max(replacement_start + 1, (end * target + count - 1) // count),
+    )
+    return replacement_end - replacement_start
+
+
+def _coarsened_track_weights(
+    values: tuple[int, ...],
+    count: int,
+    target: int,
+) -> tuple[int, ...]:
+    if not values:
+        return ()
+    result = [0] * target
+    for index in range(count):
+        destination = min(target - 1, index * target // count)
+        result[destination] += values[index] if index < len(values) else 0
+    return tuple(result)
 
 
 def _retain_root_width_ruler(

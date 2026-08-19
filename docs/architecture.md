@@ -750,7 +750,10 @@ considered. Horizontal proportions move to individual widget size-policy
 stretch values. A simple row may retain at most five layout-stretch entries so
 its gaps still participate in resize; longer box-layout vectors are omitted,
 and `QVBoxLayout` has none. Only short vectors belonging to margin wrappers or
-genuinely local grids remain.
+genuinely local grids remain. A final deterministic model pass coarsens any
+remaining fallback grid to at most five tracks per axis and records the
+`grid-track-coarsening` transformation. Thus the simplified representation has
+a structural bound even for a non-slicing overlap pattern.
 
 The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
 spacers and the height ruler, and retains a zero-height root width ruler. The
