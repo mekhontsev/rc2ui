@@ -148,6 +148,39 @@ def source_widget_items(layout):
 
 
 class LayoutAndEmitterTests(unittest.TestCase):
+    def test_emits_win32_tabstops_in_source_order_not_geometry_order(self) -> None:
+        tabstop = 0x00010000
+        dialog = make_dialog(
+            [
+                ("Button", "Bottom", tabstop, RectDlu(10, 55, 45, 14)),
+                ("Button", "Middle", 0, RectDlu(10, 30, 45, 14)),
+                ("Button", "Top", tabstop, RectDlu(10, 5, 45, 14)),
+            ]
+        )
+
+        result = build(dialog)
+        xml = ET.fromstring(
+            emit_ui(result.root_widget, tab_order=result.tab_order)
+        )
+
+        self.assertEqual(result.tab_order, ("bottomButton", "topButton"))
+        self.assertEqual(
+            [item.text for item in xml.findall("./tabstops/tabstop")],
+            ["bottomButton", "topButton"],
+        )
+
+    def test_emitter_rejects_unknown_or_duplicate_tabstops(self) -> None:
+        widget = QtWidget(
+            "QDialog",
+            "sampleDialog",
+            children=(QtWidget("QLineEdit", "valueEdit"),),
+        )
+
+        with self.assertRaisesRegex(ValueError, "unknown widget"):
+            emit_ui(widget, tab_order=("missingEdit",))
+        with self.assertRaisesRegex(ValueError, "duplicate widget"):
+            emit_ui(widget, tab_order=("valueEdit", "valueEdit"))
+
     def test_ui_comments_can_be_omitted_without_changing_string_values(self) -> None:
         widget = QtWidget(
             "QDialog",

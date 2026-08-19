@@ -903,9 +903,16 @@ attributes; layout and text models remain unchanged. Catalog emission removes
 the corresponding disambiguation key so runtime translation lookup stays
 consistent, while retaining translator-only source notes.
 
+Keyboard traversal remains source-driven even though visual layout inference
+is geometry-driven. The compiled dialog-template creation order is filtered by
+`WS_TABSTOP` and serialized explicitly as Qt `<tabstops>`. Consequently,
+faithful and simplified forms have the same keyboard order. A many-to-one
+compound replacement occupies the first tab-stop position of any consumed
+source member and is emitted only once.
+
 `validation.ui_xml` parses every generated document before writing it and checks
-the root structure plus global uniqueness of widget, layout, spacer, and button
-group names.
+the root structure, tab-stop references, and global uniqueness of widget,
+layout, spacer, and button group names.
 
 ## Localization emission
 

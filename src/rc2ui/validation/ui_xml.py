@@ -21,6 +21,7 @@ def validate_ui_xml(text: str) -> None:
         raise UiValidationError("a .ui file must declare its form class")
 
     seen: set[str] = set()
+    widget_names: set[str] = set()
     for element in root.iter():
         if element.tag not in {"widget", "layout", "spacer", "buttongroup"}:
             continue
@@ -30,8 +31,22 @@ def validate_ui_xml(text: str) -> None:
         if name in seen:
             raise UiValidationError(f"duplicate object name {name!r}")
         seen.add(name)
+        if element.tag == "widget":
+            widget_names.add(name)
 
     root_widget = widgets[0]
+    widget_names.discard(root_widget.get("name"))
+    tabstop_names: set[str] = set()
+    for tabstop in root.findall("./tabstops/tabstop"):
+        if not tabstop.text or tabstop.text not in widget_names:
+            raise UiValidationError(
+                f"tab order references unknown widget {tabstop.text!r}"
+            )
+        if tabstop.text in tabstop_names:
+            raise UiValidationError(
+                f"tab order contains duplicate widget {tabstop.text!r}"
+            )
+        tabstop_names.add(tabstop.text)
     # Geometry is forbidden only for widgets owned by a layout item. Qt
     # Designer also permits direct, unmanaged child widgets; rc2ui uses those
     # for Win32 controls deliberately parked off-screen for later repositioning.

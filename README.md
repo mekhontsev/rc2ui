@@ -23,6 +23,7 @@ resources and build configuration as the compiled inputs.
 - coordinate-driven `QGridLayout` generation with rows, columns, spans,
   proportional gaps, and long-range anchors;
 - preservation of clear horizontal and vertical ordering during resize;
+- Win32 `WS_TABSTOP` order preserved explicitly in Qt `<tabstops>`;
 - dynamic font scaling through layout minimums and font-relative grid rulers;
 - geometry-first `GROUPBOX` containment, independent of RC declaration order;
 - horizontal and vertical separator regions;

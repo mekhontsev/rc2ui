@@ -25,6 +25,7 @@ def emit_ui(
     *,
     form_class: str | None = None,
     include_comments: bool = True,
+    tab_order: tuple[str, ...] = (),
 ) -> str:
     root = ET.Element("ui", {"version": "4.0"})
     class_element = ET.SubElement(root, "class")
@@ -40,6 +41,11 @@ def emit_ui(
             _text_child(item, "header", custom_widget.header)
             if custom_widget.container:
                 _text_child(item, "container", "1")
+    if tab_order:
+        _validate_tab_order(root_widget, tab_order)
+        tabstops_element = ET.SubElement(root, "tabstops")
+        for object_name in tab_order:
+            _text_child(tabstops_element, "tabstop", object_name)
     ET.SubElement(root, "resources")
     ET.SubElement(root, "connections")
     button_groups = _collect_button_groups(root_widget)
@@ -60,6 +66,7 @@ def write_ui(
     *,
     form_class: str | None = None,
     include_comments: bool = True,
+    tab_order: tuple[str, ...] = (),
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -68,6 +75,7 @@ def write_ui(
             root_widget,
             form_class=form_class,
             include_comments=include_comments,
+            tab_order=tab_order,
         ),
         encoding="utf-8",
         newline="\n",
@@ -79,6 +87,46 @@ def _remove_string_comments(root: ET.Element) -> None:
     for element in root.iter("string"):
         element.attrib.pop("comment", None)
         element.attrib.pop("extracomment", None)
+
+
+def _validate_tab_order(
+    root_widget: QtWidget,
+    tab_order: tuple[str, ...],
+) -> None:
+    widget_names = _collect_widget_names(root_widget)
+    seen: set[str] = set()
+    for object_name in tab_order:
+        if object_name not in widget_names:
+            raise ValueError(
+                f"tab order references unknown widget {object_name!r}"
+            )
+        if object_name in seen:
+            raise ValueError(
+                f"tab order contains duplicate widget {object_name!r}"
+            )
+        seen.add(object_name)
+
+
+def _collect_widget_names(root_widget: QtWidget) -> set[str]:
+    found: set[str] = set()
+
+    def visit_widget(widget: QtWidget) -> None:
+        found.add(widget.object_name)
+        for child in widget.children:
+            visit_widget(child)
+        if widget.layout:
+            visit_layout(widget.layout)
+
+    def visit_layout(layout: QtLayout) -> None:
+        for item in layout.items:
+            if item.widget:
+                visit_widget(item.widget)
+            elif item.layout:
+                visit_layout(item.layout)
+
+    visit_widget(root_widget)
+    found.discard(root_widget.object_name)
+    return found
 
 
 def _emit_widget(parent: ET.Element, widget: QtWidget) -> None:

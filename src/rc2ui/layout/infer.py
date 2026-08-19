@@ -32,6 +32,7 @@ from rc2ui.layout.font_scaling import make_font_responsive
 from rc2ui.layout.grid import build_coordinate_tracks
 from rc2ui.layout.initial_size import initial_form_size
 from rc2ui.layout.row_anchors import coherent_vertical_anchor_groups
+from rc2ui.layout.tab_order import source_tab_order
 from rc2ui.mapping.model import (
     ControlRole,
     MappedControl,
@@ -73,6 +74,7 @@ class LayoutBuildResult:
         tuple[int, tuple[tuple[int, int], ...]],
         ...,
     ]
+    tab_order: tuple[str, ...]
 
     def rect_for(self, order: int) -> RectDlu:
         for candidate_order, rect in self.resolved_rects:
@@ -406,20 +408,21 @@ class LayoutBuilder:
             children=tuple(_parked_widget(node) for node in parked_nodes),
         )
         return LayoutBuildResult(
-            root_widget,
-            tuple(diagnostics),
-            client_bounds,
-            tuple(sorted(self._resolved_rects.items())),
-            tuple(
+            root_widget=root_widget,
+            diagnostics=tuple(diagnostics),
+            layout_bounds=client_bounds,
+            resolved_rects=tuple(sorted(self._resolved_rects.items())),
+            selected_anchors=tuple(
                 (order, horizontal, vertical)
                 for order, (horizontal, vertical) in sorted(
                     self._selected_anchors.items()
                 )
             ),
-            tuple(
+            alternative_states=tuple(
                 (order, tuple(states))
                 for order, states in sorted(self._alternative_states.items())
             ),
+            tab_order=source_tab_order(dialog, naming, self._semantic_plan),
         )
 
     def _geometry_diagnostics(

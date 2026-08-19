@@ -80,6 +80,14 @@ class BatchConversionTests(unittest.TestCase):
             faithful_xml.find("./widget/layout").get("class"),
             "QGridLayout",
         )
+        self.assertEqual(
+            [item.text for item in faithful_xml.findall("./tabstops/tabstop")],
+            ["userNameEdit"],
+        )
+        self.assertEqual(
+            [item.text for item in simplified_xml.findall("./tabstops/tabstop")],
+            ["userNameEdit"],
+        )
         self.assertEqual(faithful.forms[0].layout_mode_requested, "faithful")
         self.assertEqual(faithful.forms[0].layout_mode_used, "faithful")
         self.assertEqual(

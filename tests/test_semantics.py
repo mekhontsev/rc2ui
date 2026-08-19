@@ -3,6 +3,7 @@ from __future__ import annotations
 import tomllib
 import unittest
 import xml.etree.ElementTree as ET
+from dataclasses import replace
 from pathlib import Path, PurePosixPath
 
 from rc2ui.analysis.multilingual import fuse_dialog_languages
@@ -164,7 +165,17 @@ class SemanticTests(unittest.TestCase):
             "decimals = 3\n"
             "singleStep = 0.25\n"
         )
-        multilingual, mapped = _analyze(_edit_updown_dialog())
+        dialog = _edit_updown_dialog()
+        dialog = replace(
+            dialog,
+            controls=tuple(
+                replace(control, style=control.style | 0x00010000)
+                if control.order in {1, 2}
+                else control
+                for control in dialog.controls
+            ),
+        )
+        multilingual, mapped = _analyze(dialog)
         plan = SemanticEngine(semantic_map).analyze(multilingual, mapped)
         naming_mapped = apply_semantic_mapping(mapped, plan, for_naming=True)
         naming = NameResolver().resolve(multilingual.dialog, naming_mapped)
@@ -177,7 +188,7 @@ class SemanticTests(unittest.TestCase):
             multilingual.layout_hints,
             plan,
         )
-        text = emit_ui(layout.root_widget)
+        text = emit_ui(layout.root_widget, tab_order=layout.tab_order)
         validate_ui_xml(text)
         xml = ET.fromstring(text)
 
@@ -198,6 +209,11 @@ class SemanticTests(unittest.TestCase):
         self.assertIn("DoubleSpinBox", spin.get("name"))
         self.assertEqual(plan.consumed_orders, frozenset({2}))
         self.assertEqual(layout.rect_for(1), RectDlu(62, 10, 96, 14))
+        self.assertEqual(layout.tab_order, (spin.get("name"),))
+        self.assertEqual(
+            [item.text for item in xml.findall("./tabstops/tabstop")],
+            [spin.get("name")],
+        )
 
     def test_browse_field_is_bundled_and_retains_both_widgets(self) -> None:
         dialog = _dialog(

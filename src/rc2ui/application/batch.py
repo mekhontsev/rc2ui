@@ -560,6 +560,7 @@ class BatchConverter:
             localized_form.root_widget,
             form_class=dialog_object_name,
             include_comments=ui_comments,
+            tab_order=layout.tab_order,
         )
         try:
             validate_ui_xml(text)
