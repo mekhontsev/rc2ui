@@ -748,12 +748,12 @@ per-item stretch vector, avoiding a long `layoutStretch` property in Designer.
 Matrices and staggered controls use the same row stack before a compact grid is
 considered. Horizontal proportions move to individual widget size-policy
 stretch values. A simple row may retain at most five layout-stretch entries so
-its gaps still participate in resize; longer box-layout vectors are omitted,
-and `QVBoxLayout` has none. Only short vectors belonging to margin wrappers or
-genuinely local grids remain. A final deterministic model pass coarsens any
-remaining fallback grid to at most five tracks per axis and records the
-`grid-track-coarsening` transformation. Thus the simplified representation has
-a structural bound even for a non-slicing overlap pattern.
+its gaps still participate in resize; a longer row becomes a balanced tree of
+box layouts with bounded vectors. A recursive slicing candidate also recognizes
+empty source cuts, keeping a tall pane beside a stack of ordinary rows without
+a global grid. An irreducible overlap can retain a faithful local grid. Tracks
+are never merged merely to meet a numeric limit because that can collapse
+distinct rows and violate the primary geometry invariant.
 
 The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
 spacers and the height ruler, and retains a zero-height root width ruler. The
@@ -1146,6 +1146,8 @@ The test suite covers these architectural properties:
 - pre-emission rejection of collapsed rows or reversed order;
 - dynamic font changes without horizontal or vertical clipping or order
   changes;
+- simplified-layout degradation corpus covering long rows, regular matrices,
+  repeated form rows, and tall-pane splits at multiple runtime sizes;
 - source-geometry post-validation at multiple runtime sizes;
 - exact and regex naming-rule precedence and ambiguity;
 - project widget promotion, typed properties, exact class-and-ID bindings and

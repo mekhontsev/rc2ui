@@ -17,7 +17,6 @@ from rc2ui.qt.model import (
 
 _ROW_BOUNDARY_TOLERANCE = 1.0
 _MAX_LAYOUT_STRETCH_ITEMS = 5
-_MAX_DESIGNER_GRID_TRACKS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,7 +112,6 @@ class _Simplifier:
         reference = {entry.key: entry.rect for entry in entries}
         semantic_candidates = (
             _form_candidate(faithful, entries) if len(entries) >= 2 else None,
-            _form_grid_candidate(faithful, entries) if len(entries) >= 2 else None,
             (
                 _axis_candidate(
                     faithful,
@@ -143,6 +141,16 @@ class _Simplifier:
                 if len(entries) >= 3
                 else None
             ),
+            (
+                _slicing_candidate(
+                    faithful,
+                    entries,
+                    names=self.names,
+                )
+                if len(entries) >= 3
+                else None
+            ),
+            _form_grid_candidate(faithful, entries) if len(entries) >= 2 else None,
             (
                 _compact_grid_candidate(faithful, entries)
                 if len(entries) >= 2
@@ -191,12 +199,7 @@ def simplify_form(root_widget: QtWidget) -> SimplificationResult:
     """Create a Designer-oriented form without mutating faithful planning."""
 
     simplifier = _Simplifier(_object_names(root_widget))
-    simplified, coarsened_grids = _coarsen_widget_grids(
-        simplifier.widget(root_widget)
-    )
-    if coarsened_grids:
-        simplifier.simplified_regions += coarsened_grids
-        simplifier.transformations["grid-track-coarsening"] += coarsened_grids
+    simplified = simplifier.widget(root_widget)
     simplified = _retain_root_width_ruler(
         root_widget,
         simplified,
@@ -212,129 +215,6 @@ def simplify_form(root_widget: QtWidget) -> SimplificationResult:
             for name, count in sorted(simplifier.transformations.items())
         ),
     )
-
-
-def _coarsen_widget_grids(widget: QtWidget) -> tuple[QtWidget, int]:
-    children: list[QtWidget] = []
-    count = 0
-    for child in widget.children:
-        replacement, child_count = _coarsen_widget_grids(child)
-        children.append(replacement)
-        count += child_count
-    layout = widget.layout
-    if layout is not None:
-        layout, layout_count = _coarsen_layout_grids(layout)
-        count += layout_count
-    return replace(widget, children=tuple(children), layout=layout), count
-
-
-def _coarsen_layout_grids(layout: QtLayout) -> tuple[QtLayout, int]:
-    items: list[QtLayoutItem] = []
-    count = 0
-    for item in layout.items:
-        widget = item.widget
-        child_layout = item.layout
-        if widget is not None:
-            widget, child_count = _coarsen_widget_grids(widget)
-            count += child_count
-        elif child_layout is not None:
-            child_layout, child_count = _coarsen_layout_grids(child_layout)
-            count += child_count
-        items.append(replace(item, widget=widget, layout=child_layout))
-    layout = replace(layout, items=tuple(items))
-    if layout.class_name != "QGridLayout":
-        return layout, count
-
-    rows, columns = _grid_shape(layout)
-    target_rows = min(rows, _MAX_DESIGNER_GRID_TRACKS)
-    target_columns = min(columns, _MAX_DESIGNER_GRID_TRACKS)
-    if target_rows == rows and target_columns == columns:
-        return layout, count
-
-    items = [
-        replace(
-            item,
-            row=_coarsened_track_start(item.row or 0, rows, target_rows),
-            column=_coarsened_track_start(
-                item.column or 0,
-                columns,
-                target_columns,
-            ),
-            row_span=_coarsened_track_span(
-                item.row or 0,
-                item.row_span,
-                rows,
-                target_rows,
-            ),
-            column_span=_coarsened_track_span(
-                item.column or 0,
-                item.column_span,
-                columns,
-                target_columns,
-            ),
-        )
-        for item in layout.items
-    ]
-    return (
-        replace(
-            layout,
-            items=tuple(items),
-            stretch=_coarsened_track_weights(
-                layout.stretch,
-                columns,
-                target_columns,
-            ),
-            row_stretch=_coarsened_track_weights(
-                layout.row_stretch,
-                rows,
-                target_rows,
-            ),
-            minimum_widths=_coarsened_track_weights(
-                layout.minimum_widths,
-                columns,
-                target_columns,
-            ),
-            minimum_heights=_coarsened_track_weights(
-                layout.minimum_heights,
-                rows,
-                target_rows,
-            ),
-        ),
-        count + 1,
-    )
-
-
-def _coarsened_track_start(start: int, count: int, target: int) -> int:
-    return min(target - 1, start * target // count)
-
-
-def _coarsened_track_span(
-    start: int,
-    span: int,
-    count: int,
-    target: int,
-) -> int:
-    replacement_start = _coarsened_track_start(start, count, target)
-    end = min(count, start + span)
-    replacement_end = min(
-        target,
-        max(replacement_start + 1, (end * target + count - 1) // count),
-    )
-    return replacement_end - replacement_start
-
-
-def _coarsened_track_weights(
-    values: tuple[int, ...],
-    count: int,
-    target: int,
-) -> tuple[int, ...]:
-    if not values:
-        return ()
-    result = [0] * target
-    for index in range(count):
-        destination = min(target - 1, index * target // count)
-        result[destination] += values[index] if index < len(values) else 0
-    return tuple(result)
 
 
 def _retain_root_width_ruler(
@@ -682,19 +562,104 @@ def _axis_candidate(
     }
     class_name = "QHBoxLayout" if horizontal else "QVBoxLayout"
     return _Candidate(
-        QtLayout(
+        _bounded_axis_layout(
             class_name,
             source.object_name,
             tuple(items),
+            tuple(item_stretches),
             properties=_portable_properties(source, zero_spacing=True),
-            stretch=(
-                tuple(item_stretches)
-                if len(item_stretches) <= _MAX_LAYOUT_STRETCH_ITEMS
-                else ()
-            ),
+            names=names,
         ),
         placements,
         "grid-to-hbox" if horizontal else "grid-to-vbox",
+    )
+
+
+def _bounded_axis_layout(
+    class_name: str,
+    object_name: str,
+    items: tuple[QtLayoutItem, ...],
+    stretches: tuple[int, ...],
+    *,
+    properties: tuple[QtProperty, ...],
+    names: _ObjectNameAllocator,
+) -> QtLayout:
+    """Build a proportional box-layout tree with short Designer vectors."""
+
+    if len(items) <= _MAX_LAYOUT_STRETCH_ITEMS:
+        return QtLayout(
+            class_name,
+            object_name,
+            items,
+            properties=properties,
+            stretch=stretches,
+        )
+
+    gap_indexes = tuple(
+        index
+        for index, item in enumerate(items)
+        if item.spacer is not None
+        and (
+            (class_name == "QHBoxLayout" and item.spacer.orientation == "horizontal")
+            or (
+                class_name == "QVBoxLayout"
+                and item.spacer.orientation == "vertical"
+            )
+        )
+        and 0 < index < len(items) - 1
+    )
+    if gap_indexes:
+        split = min(
+            gap_indexes,
+            key=lambda index: (
+                abs(sum(stretches[:index]) - sum(stretches[index + 1 :])),
+                index,
+            ),
+        )
+        left_items = items[:split]
+        right_items = items[split + 1 :]
+        left_stretches = stretches[:split]
+        right_stretches = stretches[split + 1 :]
+        middle = (items[split],)
+        root_stretches = (
+            max(1, sum(left_stretches)),
+            stretches[split],
+            max(1, sum(right_stretches)),
+        )
+    else:
+        split = len(items) // 2
+        left_items = items[:split]
+        right_items = items[split:]
+        left_stretches = stretches[:split]
+        right_stretches = stretches[split:]
+        middle = ()
+        root_stretches = (
+            max(1, sum(left_stretches)),
+            max(1, sum(right_stretches)),
+        )
+
+    left = _bounded_axis_layout(
+        class_name,
+        names.next(f"{object_name}Segment"),
+        left_items,
+        left_stretches,
+        properties=properties,
+        names=names,
+    )
+    right = _bounded_axis_layout(
+        class_name,
+        names.next(f"{object_name}Segment"),
+        right_items,
+        right_stretches,
+        properties=properties,
+        names=names,
+    )
+    return QtLayout(
+        class_name,
+        object_name,
+        (QtLayoutItem(layout=left), *middle, QtLayoutItem(layout=right)),
+        properties=properties,
+        stretch=root_stretches,
     )
 
 
@@ -802,6 +767,156 @@ def _vertical_overlap_bands(
         )
         for band in bands
     )
+
+
+def _slicing_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate | None:
+    """Recursively split panes along source-empty horizontal/vertical cuts."""
+
+    partition = _best_slice_partition(entries)
+    if partition is None:
+        return None
+    horizontal, first, second, gap = partition
+    first_item = _sliced_group_item(source, first, names=names)
+    second_item = _sliced_group_item(source, second, names=names)
+    if first_item is None or second_item is None:
+        return None
+    class_name = "QHBoxLayout" if horizontal else "QVBoxLayout"
+    orientation = "horizontal" if horizontal else "vertical"
+    middle: tuple[QtLayoutItem, ...] = ()
+    stretches = (
+        max(1, round(_group_extent(first, horizontal=horizontal))),
+        max(1, round(_group_extent(second, horizontal=horizontal))),
+    )
+    if gap > 0:
+        middle = (
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}SliceGap"),
+                    orientation,
+                    size_type="Minimum",
+                    size_hint=max(1, round(gap)),
+                )
+            ),
+        )
+        stretches = (stretches[0], max(1, round(gap)), stretches[1])
+    return _Candidate(
+        QtLayout(
+            class_name,
+            source.object_name,
+            (first_item, *middle, second_item),
+            properties=_portable_properties(source, zero_spacing=True),
+            stretch=stretches,
+        ),
+        {entry.key: entry.rect for entry in entries},
+        "grid-to-slicing-layout",
+    )
+
+
+def _sliced_group_item(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    names: _ObjectNameAllocator,
+) -> QtLayoutItem | None:
+    if len(entries) == 1:
+        return replace(
+            entries[0].item,
+            row=None,
+            column=None,
+            row_span=1,
+            column_span=1,
+        )
+    for horizontal in (True, False):
+        candidate = _axis_candidate(
+            source,
+            entries,
+            horizontal=horizontal,
+            names=names,
+        )
+        if candidate is not None:
+            return QtLayoutItem(
+                layout=replace(
+                    candidate.layout,
+                    object_name=names.next(f"{source.object_name}Slice"),
+                )
+            )
+    candidate = _slicing_candidate(source, entries, names=names)
+    if candidate is None:
+        return None
+    return QtLayoutItem(
+        layout=replace(
+            candidate.layout,
+            object_name=names.next(f"{source.object_name}Slice"),
+        )
+    )
+
+
+def _best_slice_partition(
+    entries: tuple[_Entry, ...],
+) -> tuple[bool, tuple[_Entry, ...], tuple[_Entry, ...], float] | None:
+    candidates: list[
+        tuple[float, int, bool, tuple[_Entry, ...], tuple[_Entry, ...]]
+    ] = []
+    for horizontal in (True, False):
+        ordered = sorted(
+            entries,
+            key=(
+                (lambda entry: (entry.rect.left, entry.rect.right, entry.key))
+                if horizontal
+                else (
+                    lambda entry: (entry.rect.top, entry.rect.bottom, entry.key)
+                )
+            ),
+        )
+        for index in range(1, len(ordered)):
+            first = tuple(ordered[:index])
+            second = tuple(ordered[index:])
+            first_end = max(
+                entry.rect.right if horizontal else entry.rect.bottom
+                for entry in first
+            )
+            second_start = min(
+                entry.rect.left if horizontal else entry.rect.top
+                for entry in second
+            )
+            gap = second_start - first_end
+            if gap < -_ROW_BOUNDARY_TOLERANCE:
+                continue
+            candidates.append(
+                (
+                    max(0.0, gap),
+                    min(len(first), len(second)),
+                    horizontal,
+                    first,
+                    second,
+                )
+            )
+    if not candidates:
+        return None
+    gap, _balance, horizontal, first, second = max(
+        candidates,
+        key=lambda candidate: (candidate[0], candidate[1], candidate[2]),
+    )
+    return horizontal, first, second, gap
+
+
+def _group_extent(
+    entries: tuple[_Entry, ...],
+    *,
+    horizontal: bool,
+) -> float:
+    starts = tuple(
+        entry.rect.left if horizontal else entry.rect.top for entry in entries
+    )
+    ends = tuple(
+        entry.rect.right if horizontal else entry.rect.bottom for entry in entries
+    )
+    return max(ends) - min(starts)
 
 
 def _horizontal_band_candidate(

@@ -301,10 +301,11 @@ of rows from becoming a large local coordinate grid. Matrices and staggered
 rows also prefer a `QVBoxLayout` of `QHBoxLayout` rows. Row proportions are
 stored on the participating widgets' size policies. A simple row may retain a
 stretch vector of at most five entries so its gaps participate in resize;
-longer box-layout lists are never emitted. Only short grid vectors used by
-margin wrappers or genuinely local grids remain. As a final fallback, every
-grid is coarsened to at most five logical rows and five logical columns, so a
-`simplified` file cannot contain an unbounded coordinate-track list.
+longer rows become a tree of proportional box layouts whose individual vectors
+are still bounded to five entries. Empty source cuts also split pane-shaped
+forms recursively, for example into `HBox(left pane, gap, VBox(right rows))`.
+Only an irreducible overlap region may retain a faithful local grid: rc2ui does
+not merge tracks when doing so would collapse rows or reverse source order.
 
 Every candidate must preserve pairwise left/right and above/below order,
 overlap, and source-proven shared boundaries. Outer margins and meaningful gaps

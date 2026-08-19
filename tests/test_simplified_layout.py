@@ -9,10 +9,17 @@ from pathlib import Path
 
 from rc2ui.domain.diagnostics import Severity
 from rc2ui.domain.geometry import RectDlu
+from rc2ui.layout.infer import LayoutBuilder
 from rc2ui.layout.simplify import editability_score, simplify_form
+from rc2ui.mapping.controls import ControlMapper
+from rc2ui.naming.resolver import NameResolver
 from rc2ui.qt.emitter import emit_ui
-from rc2ui.qt.model import QtLayout, QtLayoutItem, QtWidget
+from rc2ui.qt.model import QtWidget
 from rc2ui.qtcheck.discovery import discover_qt_binding
+from rc2ui.qtcheck.model import (
+    ControlGeometryReference,
+    FormGeometryReference,
+)
 from rc2ui.qtcheck.runner import run_qt_checks
 from rc2ui.validation.ui_xml import validate_ui_xml
 from tests.test_layout_and_emitter import build, dense_multiline_dialog, make_dialog
@@ -24,6 +31,49 @@ def content_layout(widget):
         for item in widget.layout.items
         if item.layout is not None
     )
+
+
+def simplified_case(dialog):
+    mapped = tuple(ControlMapper().map(control) for control in dialog.controls)
+    naming = NameResolver().resolve(dialog, mapped)
+    faithful = LayoutBuilder().build(dialog, mapped, naming)
+    simplified = simplify_form(faithful.root_widget)
+    reference = FormGeometryReference(
+        rect_dlu=(
+            dialog.rect.x,
+            dialog.rect.y,
+            dialog.rect.width,
+            dialog.rect.height,
+        ),
+        layout_rect_dlu=(
+            faithful.layout_bounds.x,
+            faithful.layout_bounds.y,
+            faithful.layout_bounds.width,
+            faithful.layout_bounds.height,
+        ),
+        controls=tuple(
+            ControlGeometryReference(
+                object_name=naming.for_order(control.order).object_name,
+                rect_dlu=(
+                    control.rect.x,
+                    control.rect.y,
+                    control.rect.width,
+                    control.rect.height,
+                ),
+                layout_rect_dlu=(
+                    faithful.rect_for(control.order).x,
+                    faithful.rect_for(control.order).y,
+                    faithful.rect_for(control.order).width,
+                    faithful.rect_for(control.order).height,
+                ),
+                qt_class=mapped[control.order].qt_class,
+                horizontal_anchor=faithful.anchors_for(control.order)[0],
+                vertical_anchor=faithful.anchors_for(control.order)[1],
+            )
+            for control in dialog.controls
+        ),
+    )
+    return simplified, reference
 
 
 class SimplifiedLayoutTests(unittest.TestCase):
@@ -71,7 +121,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
             any(name.startswith("fontMinimum") for name in spacer_names)
         )
 
-    def test_gapped_label_editor_rows_use_scalable_form_grid(self) -> None:
+    def test_gapped_label_editor_rows_use_editable_row_stack(self) -> None:
         faithful = build(
             make_dialog(
                 [
@@ -86,13 +136,10 @@ class SimplifiedLayoutTests(unittest.TestCase):
         )
 
         simplified = simplify_form(faithful.root_widget)
-        form_grid = content_layout(simplified.root_widget)
-
-        self.assertEqual(form_grid.class_name, "QGridLayout")
-        self.assertEqual(len(form_grid.stretch), 3)
+        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
         self.assertEqual(
             simplified.transformations,
-            ("grid-to-form-grid:1",),
+            ("grid-to-vertical-bands:1",),
         )
 
     def test_horizontal_button_row_becomes_hbox(self) -> None:
@@ -224,66 +271,77 @@ class SimplifiedLayoutTests(unittest.TestCase):
 
         simplified = simplify_form(faithful.root_widget)
         xml = ET.fromstring(emit_ui(simplified.root_widget))
-        [row] = xml.findall(".//layout[@class='QHBoxLayout']")
+        rows = xml.findall(".//layout[@class='QHBoxLayout']")
 
-        self.assertIsNone(row.get("stretch"))
+        self.assertTrue(rows)
+        self.assertTrue(
+            all(
+                len(row.get("stretch", "").split(",")) <= 5
+                for row in rows
+            )
+        )
         self.assertEqual(
             [
                 policy.findtext("horstretch")
-                for policy in row.findall(
-                    "./item/widget/property[@name='sizePolicy']/sizepolicy"
+                for policy in xml.findall(
+                    ".//widget[@class='QPushButton']"
+                    "/property[@name='sizePolicy']/sizepolicy"
                 )
             ],
             ["40"] * 6,
         )
 
-    def test_complex_fallback_grid_is_capped_at_five_tracks(self) -> None:
-        root = QtWidget(
-            "QDialog",
-            "sampleDialog",
-            layout=QtLayout(
-                "QGridLayout",
-                "denseGrid",
-                tuple(
-                    QtLayoutItem(
-                        widget=QtWidget("QWidget", f"layer{index}"),
-                        row=index,
-                        column=index,
-                        row_span=5,
-                        column_span=5,
+    def test_tall_pane_uses_recursive_empty_space_slices(self) -> None:
+        dialog = replace(
+            make_dialog(
+                [("ListBox", "", 0, RectDlu(5, 6, 80, 77))]
+                + [
+                    (
+                        "Static",
+                        f"Field {row}:",
+                        0,
+                        RectDlu(98, 8 + row * 21, 45, 8),
                     )
-                    for index in range(6)
-                ),
-                stretch=tuple(range(10, 110, 10)),
-                row_stretch=tuple(range(10, 110, 10)),
-                minimum_widths=tuple(range(10, 110, 10)),
-                minimum_heights=tuple(range(10, 110, 10)),
+                    for row in range(4)
+                ]
+                + [
+                    (
+                        "Edit",
+                        "",
+                        0,
+                        RectDlu(148, 5 + row * 21, 90, 14),
+                    )
+                    for row in range(4)
+                ]
             ),
+            rect=RectDlu(0, 0, 245, 95),
         )
 
-        simplified = simplify_form(root)
+        simplified = simplify_form(build(dialog).root_widget)
         xml = ET.fromstring(emit_ui(simplified.root_widget))
 
-        self.assertIn("grid-track-coarsening:1", simplified.transformations)
-        for layout in xml.findall(".//layout[@class='QGridLayout']"):
-            for name in (
-                "columnstretch",
-                "rowstretch",
-                "columnminimumwidth",
-                "rowminimumheight",
-            ):
-                value = layout.get(name)
-                if value is not None:
-                    self.assertLessEqual(len(value.split(",")), 5)
-            for item in layout.findall("./item"):
-                self.assertLess(
-                    int(item.get("column", "0")),
-                    5,
-                )
-                self.assertLess(
-                    int(item.get("row", "0")),
-                    5,
-                )
+        self.assertEqual(
+            simplified.transformations,
+            ("grid-to-slicing-layout:1",),
+        )
+        self.assertTrue(xml.findall(".//layout[@class='QHBoxLayout']"))
+        self.assertTrue(xml.findall(".//layout[@class='QVBoxLayout']"))
+        self.assertFalse(
+            [
+                value
+                for layout in xml.findall(".//layout")
+                for name, value in layout.attrib.items()
+                if name
+                in {
+                    "stretch",
+                    "columnstretch",
+                    "rowstretch",
+                    "columnminimumwidth",
+                    "rowminimumheight",
+                }
+                and len(value.split(",")) > 5
+            ]
+        )
 
     def test_partial_overlap_keeps_faithful_region(self) -> None:
         faithful = build(
@@ -518,6 +576,135 @@ class SimplifiedLayoutTests(unittest.TestCase):
                 in {"qt.font-height-clipped", "qt.font-width-clipped"}
                 for diagnostic in payload["forms"][0]["diagnostics"]
             )
+        )
+
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_simplified_degradation_corpus_keeps_gaps_and_order(self) -> None:
+        cases = {
+            "long_row": replace(
+                make_dialog(
+                    [
+                        (
+                            "Button",
+                            f"Action {index}",
+                            0,
+                            RectDlu(5 + index * 45, 8, 40, 14),
+                        )
+                        for index in range(6)
+                    ]
+                ),
+                rect=RectDlu(0, 0, 280, 45),
+            ),
+            "matrix": replace(
+                make_dialog(
+                    [
+                        (
+                            "Button",
+                            f"Cell {row} {column}",
+                            0,
+                            RectDlu(
+                                5 + column * 40,
+                                6 + row * 21,
+                                35,
+                                14,
+                            ),
+                        )
+                        for row in range(4)
+                        for column in range(6)
+                    ]
+                ),
+                rect=RectDlu(0, 0, 245, 92),
+            ),
+            "form": replace(
+                make_dialog(
+                    [
+                        spec
+                        for row in range(10)
+                        for spec in (
+                            (
+                                "Static",
+                                f"Value {row}:",
+                                0,
+                                RectDlu(5, 7 + row * 20, 52, 8),
+                            ),
+                            (
+                                "Edit",
+                                "",
+                                0,
+                                RectDlu(64, 4 + row * 20, 110, 14),
+                            ),
+                        )
+                    ]
+                ),
+                rect=RectDlu(0, 0, 185, 210),
+            ),
+            "tall_pane": replace(
+                make_dialog(
+                    [("ListBox", "", 0, RectDlu(5, 6, 80, 77))]
+                    + [
+                        (
+                            "Static",
+                            f"Field {row}:",
+                            0,
+                            RectDlu(98, 8 + row * 21, 45, 8),
+                        )
+                        for row in range(4)
+                    ]
+                    + [
+                        (
+                            "Edit",
+                            "",
+                            0,
+                            RectDlu(148, 5 + row * 21, 90, 14),
+                        )
+                        for row in range(4)
+                    ]
+                ),
+                rect=RectDlu(0, 0, 245, 95),
+            ),
+        }
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            paths: list[Path] = []
+            references: dict[Path, FormGeometryReference] = {}
+            for name, dialog in cases.items():
+                simplified, reference = simplified_case(dialog)
+                path = root / f"{name}.ui"
+                path.write_text(
+                    emit_ui(simplified.root_widget),
+                    encoding="utf-8",
+                )
+                paths.append(path)
+                references[path] = reference
+            report_path = root / "qt-report.json"
+            run_qt_checks(
+                tuple(paths),
+                report_path=report_path,
+                required=True,
+                geometry_references=references,
+            )
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+
+        degradation_codes = {
+            "qt.font-height-clipped",
+            "qt.font-order-changed",
+            "qt.font-width-clipped",
+            "qt.source-gap-affinity-changed",
+            "qt.source-gap-shrunk",
+            "qt.source-gap-static",
+            "qt.source-order-changed",
+            "qt.unexpected-overlap",
+        }
+        self.assertFalse(
+            [
+                (Path(form["path"]).stem, diagnostic["code"])
+                for form in report["forms"]
+                for diagnostic in form["diagnostics"]
+                if diagnostic["code"] in degradation_codes
+            ]
         )
 
 
