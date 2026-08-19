@@ -297,8 +297,12 @@ only unambiguous layout regions with smaller Designer-oriented structures:
 Vertical bands use explicit gap spacers instead of serializing one root
 `layoutStretch` value for every source row and gap. A one-DLU overlap at a row
 boundary is treated as coordinate noise, preventing an otherwise ordinary pair
-of rows from becoming a large local coordinate grid. Short per-row stretch
-lists may remain where they express a real horizontal proportion.
+of rows from becoming a large local coordinate grid. Matrices and staggered
+rows also prefer a `QVBoxLayout` of `QHBoxLayout` rows. Row proportions are
+stored on the participating widgets' size policies. A simple row may retain a
+stretch vector of at most five entries so its gaps participate in resize;
+longer box-layout lists are never emitted. Only short grid vectors used by
+margin wrappers or genuinely local grids remain.
 
 Every candidate must preserve pairwise left/right and above/below order,
 overlap, and source-proven shared boundaries. Outer margins and meaningful gaps

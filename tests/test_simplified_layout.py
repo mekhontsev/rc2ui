@@ -133,7 +133,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
         )
         self.assertEqual(simplified.transformations, ("grid-to-vbox:1",))
 
-    def test_coordinate_matrix_becomes_compact_grid(self) -> None:
+    def test_coordinate_matrix_becomes_editable_row_stack(self) -> None:
         faithful = build(
             make_dialog(
                 [
@@ -146,16 +146,95 @@ class SimplifiedLayoutTests(unittest.TestCase):
         )
 
         simplified = simplify_form(faithful.root_widget)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
 
-        self.assertEqual(simplified.root_widget.layout.class_name, "QGridLayout")
-        compact = content_layout(simplified.root_widget)
-        self.assertEqual(len(compact.row_stretch), 3)
-        self.assertEqual(len(compact.stretch), 3)
-        self.assertLess(compact.row_stretch[1], compact.row_stretch[0])
-        self.assertLess(compact.stretch[1], compact.stretch[0])
+        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        self.assertEqual(
+            len(xml.findall(".//layout[@class='QHBoxLayout']")),
+            2,
+        )
+        self.assertFalse(
+            [
+                layout.get("stretch")
+                for layout in xml.findall(
+                    ".//layout[@class='QHBoxLayout'][@stretch]"
+                )
+                if len(layout.get("stretch", "").split(",")) > 3
+            ]
+        )
         self.assertEqual(
             simplified.transformations,
-            ("coordinate-to-compact-grid:1",),
+            ("grid-to-vertical-bands:1",),
+        )
+
+    def test_diagonal_controls_do_not_create_long_grid_tracks(self) -> None:
+        faithful = build(
+            make_dialog(
+                [
+                    (
+                        "Button",
+                        f"Action {index}",
+                        0,
+                        RectDlu(5 + index * 8, 5 + index * 20, 40, 14),
+                    )
+                    for index in range(8)
+                ]
+            )
+        )
+
+        simplified = simplify_form(faithful.root_widget)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+
+        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        self.assertEqual(
+            simplified.transformations,
+            ("grid-to-vertical-bands:1",),
+        )
+        self.assertFalse(
+            [
+                value
+                for layout in xml.findall(".//layout")
+                for name, value in layout.attrib.items()
+                if name
+                in {
+                    "stretch",
+                    "columnstretch",
+                    "rowstretch",
+                    "columnminimumwidth",
+                    "rowminimumheight",
+                }
+                and len(value.split(",")) > 3
+            ]
+        )
+
+    def test_wide_row_uses_widget_stretch_without_layout_list(self) -> None:
+        faithful = build(
+            make_dialog(
+                [
+                    (
+                        "Button",
+                        f"Action {index}",
+                        0,
+                        RectDlu(5 + index * 45, 5, 40, 14),
+                    )
+                    for index in range(6)
+                ]
+            )
+        )
+
+        simplified = simplify_form(faithful.root_widget)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+        [row] = xml.findall(".//layout[@class='QHBoxLayout']")
+
+        self.assertIsNone(row.get("stretch"))
+        self.assertEqual(
+            [
+                policy.findtext("horstretch")
+                for policy in row.findall(
+                    "./item/widget/property[@name='sizePolicy']/sizepolicy"
+                )
+            ],
+            ["40"] * 6,
         )
 
     def test_partial_overlap_keeps_faithful_region(self) -> None:
@@ -224,6 +303,18 @@ class SimplifiedLayoutTests(unittest.TestCase):
                 if name in track_attributes
             ),
             5,
+        )
+        self.assertFalse(
+            [
+                layout.get("stretch")
+                for layout in xml.findall(
+                    ".//layout[@class='QHBoxLayout'][@stretch]"
+                )
+                if len(layout.get("stretch", "").split(",")) > 5
+            ]
+        )
+        self.assertFalse(
+            xml.findall(".//layout[@class='QVBoxLayout'][@stretch]")
         )
         self.assertLessEqual(
             max(

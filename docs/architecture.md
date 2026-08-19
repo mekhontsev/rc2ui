@@ -745,7 +745,12 @@ longer prevents dropping a new widget between the dialog's major rows in
 Designer. A one-DLU vertical boundary overlap is normalized as source jitter.
 Root gaps are explicit Minimum spacers; the `QVBoxLayout` deliberately has no
 per-item stretch vector, avoiding a long `layoutStretch` property in Designer.
-Only short horizontal vectors that preserve a real row proportion remain.
+Matrices and staggered controls use the same row stack before a compact grid is
+considered. Horizontal proportions move to individual widget size-policy
+stretch values. A simple row may retain at most five layout-stretch entries so
+its gaps still participate in resize; longer box-layout vectors are omitted,
+and `QVBoxLayout` has none. Only short vectors belonging to margin wrappers or
+genuinely local grids remain.
 
 The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
 spacers and the height ruler, and retains a zero-height root width ruler. The

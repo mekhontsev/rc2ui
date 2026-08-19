@@ -16,6 +16,7 @@ from rc2ui.qt.model import (
 
 
 _ROW_BOUNDARY_TOLERANCE = 1.0
+_MAX_LAYOUT_STRETCH_ITEMS = 5
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,17 +134,17 @@ class _Simplifier:
                 else None
             ),
             (
-                _compact_grid_candidate(faithful, entries)
-                if len(entries) >= 2
-                else None
-            ),
-            (
                 _vertical_bands_candidate(
                     faithful,
                     entries,
                     names=self.names,
                 )
                 if len(entries) >= 3
+                else None
+            ),
+            (
+                _compact_grid_candidate(faithful, entries)
+                if len(entries) >= 2
                 else None
             ),
         )
@@ -497,23 +498,26 @@ def _axis_candidate(
 
     orientation = "horizontal" if horizontal else "vertical"
     items: list[QtLayoutItem] = []
-    stretch: list[int] = []
+    item_stretches: list[int] = []
     for index, entry in enumerate(ordered):
+        extent = max(
+            1,
+            round(entry.rect.width if horizontal else entry.rect.height),
+        )
         items.append(
             replace(
-                entry.item,
+                _with_item_axis_stretch(
+                    entry.item,
+                    horizontal=horizontal,
+                    value=extent,
+                ),
                 row=None,
                 column=None,
                 row_span=1,
                 column_span=1,
             )
         )
-        stretch.append(
-            max(
-                1,
-                round(entry.rect.width if horizontal else entry.rect.height),
-            )
-        )
+        item_stretches.append(extent)
         if index + 1 == len(ordered):
             continue
         next_entry = ordered[index + 1]
@@ -537,7 +541,7 @@ def _axis_candidate(
                 )
             )
         )
-        stretch.append(max(1, round(gap)))
+        item_stretches.append(max(1, round(gap)))
     placements = {
         entry.key: (
             _Rect(index, 0, index + 1, 1)
@@ -553,7 +557,11 @@ def _axis_candidate(
             source.object_name,
             tuple(items),
             properties=_portable_properties(source, zero_spacing=True),
-            stretch=tuple(stretch),
+            stretch=(
+                tuple(item_stretches)
+                if len(item_stretches) <= _MAX_LAYOUT_STRETCH_ITEMS
+                else ()
+            ),
         ),
         placements,
         "grid-to-hbox" if horizontal else "grid-to-vbox",
@@ -569,7 +577,7 @@ def _vertical_bands_candidate(
     """Replace a fine global grid with editable horizontal row layouts."""
 
     bands = _vertical_overlap_bands(entries)
-    if len(bands) < 2 or max(map(len, bands)) < 2:
+    if len(bands) < 2:
         return None
 
     row_count, _ = _grid_shape(source)
@@ -680,7 +688,11 @@ def _horizontal_band_candidate(
                 source.object_name,
                 (
                     replace(
-                        entry.item,
+                        _with_item_axis_stretch(
+                            entry.item,
+                            horizontal=True,
+                            value=max(1, round(entry.rect.width)),
+                        ),
                         row=None,
                         column=None,
                         row_span=1,
@@ -688,7 +700,6 @@ def _horizontal_band_candidate(
                     ),
                 ),
                 properties=_portable_properties(source, zero_spacing=True),
-                stretch=(max(1, round(entry.rect.width)),),
             ),
             {entry.key: _Rect(0, 0, 1, 1)},
             "grid-band-single",
@@ -1001,6 +1012,52 @@ def _positioned_item(
         column=column,
         row_span=row_span,
         column_span=column_span,
+    )
+
+
+def _with_item_axis_stretch(
+    item: QtLayoutItem,
+    *,
+    horizontal: bool,
+    value: int,
+) -> QtLayoutItem:
+    """Keep row proportions without a Designer-hostile layout list."""
+
+    if item.widget is None:
+        return item
+    properties: list[QtProperty] = []
+    changed = False
+    for property_ in item.widget.properties:
+        if property_.name != "sizePolicy" or not isinstance(
+            property_.value,
+            QtSizePolicy,
+        ):
+            properties.append(property_)
+            continue
+        properties.append(
+            replace(
+                property_,
+                value=replace(
+                    property_.value,
+                    horizontal_stretch=(
+                        value
+                        if horizontal
+                        else property_.value.horizontal_stretch
+                    ),
+                    vertical_stretch=(
+                        property_.value.vertical_stretch
+                        if horizontal
+                        else value
+                    ),
+                ),
+            )
+        )
+        changed = True
+    if not changed:
+        return item
+    return replace(
+        item,
+        widget=replace(item.widget, properties=tuple(properties)),
     )
 
 
