@@ -738,22 +738,19 @@ faithful region. Rejection is local: the current container keeps a cleaned
 faithful grid while already accepted descendants and unrelated containers are
 unchanged.
 
-For a complex root, vertical-overlap components become rows of a root
+For a complex root, vertical-overlap components may become rows of a root
 `QVBoxLayout`. Ordinary rows use box or compact semantic layouts. A fine
 coordinate grid survives only within a genuinely complex local band, so it no
 longer prevents dropping a new widget between the dialog's major rows in
-Designer. A one-DLU vertical boundary overlap is normalized as source jitter.
-Root gaps are explicit Minimum spacers; the `QVBoxLayout` deliberately has no
-per-item stretch vector, avoiding a long `layoutStretch` property in Designer.
-Matrices and staggered controls use the same row stack before a compact grid is
-considered. Horizontal proportions move to individual widget size-policy
-stretch values. A simple row may retain at most five layout-stretch entries so
-its gaps still participate in resize; a longer row becomes a balanced tree of
-box layouts with bounded vectors. A recursive slicing candidate also recognizes
-empty source cuts, keeping a tall pane beside a stack of ordinary rows without
-a global grid. An irreducible overlap can retain a faithful local grid. Tracks
-are never merged merely to meet a numeric limit because that can collapse
-distinct rows and violate the primary geometry invariant.
+Designer. Root and row gaps are explicit Minimum spacers. Their layout stretch
+factors remain proportional to the source DLU intervals; the same is true for
+one-dimensional box layouts. Consequently a genuinely long row or band stack
+may retain a long stretch vector. It is structural data, not redundant
+serialization: removing it freezes gaps during resize, while arbitrary nested
+grouping changes Qt's size-hint negotiation. Compact form and matrix grids are
+preferred when their topology is unambiguous. Irregular pane shapes and
+irreducible overlap retain a compact or faithful local grid rather than merging
+tracks merely to meet a numeric limit.
 
 The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
 spacers and the height ruler, and retains a zero-height root width ruler. The
@@ -1147,7 +1144,8 @@ The test suite covers these architectural properties:
 - dynamic font changes without horizontal or vertical clipping or order
   changes;
 - simplified-layout degradation corpus covering long rows, regular matrices,
-  repeated form rows, and tall-pane splits at multiple runtime sizes;
+  repeated form rows, and tall-pane compact fallbacks at multiple runtime
+  sizes;
 - source-geometry post-validation at multiple runtime sizes;
 - exact and regex naming-rule precedence and ambiguity;
 - project widget promotion, typed properties, exact class-and-ID bindings and

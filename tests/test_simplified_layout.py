@@ -121,7 +121,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
             any(name.startswith("fontMinimum") for name in spacer_names)
         )
 
-    def test_gapped_label_editor_rows_use_editable_row_stack(self) -> None:
+    def test_gapped_label_editor_rows_use_coarse_form_grid(self) -> None:
         faithful = build(
             make_dialog(
                 [
@@ -136,10 +136,13 @@ class SimplifiedLayoutTests(unittest.TestCase):
         )
 
         simplified = simplify_form(faithful.root_widget)
-        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        self.assertEqual(
+            content_layout(simplified.root_widget).class_name,
+            "QGridLayout",
+        )
         self.assertEqual(
             simplified.transformations,
-            ("grid-to-vertical-bands:1",),
+            ("grid-to-form-grid:1",),
         )
 
     def test_horizontal_button_row_becomes_hbox(self) -> None:
@@ -180,7 +183,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
         )
         self.assertEqual(simplified.transformations, ("grid-to-vbox:1",))
 
-    def test_coordinate_matrix_becomes_editable_row_stack(self) -> None:
+    def test_coordinate_matrix_becomes_compact_grid(self) -> None:
         faithful = build(
             make_dialog(
                 [
@@ -195,26 +198,25 @@ class SimplifiedLayoutTests(unittest.TestCase):
         simplified = simplify_form(faithful.root_widget)
         xml = ET.fromstring(emit_ui(simplified.root_widget))
 
-        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
         self.assertEqual(
-            len(xml.findall(".//layout[@class='QHBoxLayout']")),
-            2,
+            content_layout(simplified.root_widget).class_name,
+            "QGridLayout",
         )
-        self.assertFalse(
-            [
-                layout.get("stretch")
+        self.assertEqual(
+            max(
+                len(layout.get("columnstretch", "").split(","))
                 for layout in xml.findall(
-                    ".//layout[@class='QHBoxLayout'][@stretch]"
+                    ".//layout[@class='QGridLayout'][@columnstretch]"
                 )
-                if len(layout.get("stretch", "").split(",")) > 3
-            ]
+            ),
+            3,
         )
         self.assertEqual(
             simplified.transformations,
-            ("grid-to-vertical-bands:1",),
+            ("coordinate-to-compact-grid:1",),
         )
 
-    def test_diagonal_controls_do_not_create_long_grid_tracks(self) -> None:
+    def test_diagonal_controls_keep_proportional_grid_tracks(self) -> None:
         faithful = build(
             make_dialog(
                 [
@@ -232,29 +234,22 @@ class SimplifiedLayoutTests(unittest.TestCase):
         simplified = simplify_form(faithful.root_widget)
         xml = ET.fromstring(emit_ui(simplified.root_widget))
 
-        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        self.assertEqual(
+            content_layout(simplified.root_widget).class_name,
+            "QGridLayout",
+        )
         self.assertEqual(
             simplified.transformations,
-            ("grid-to-vertical-bands:1",),
+            ("coordinate-to-compact-grid:1",),
         )
-        self.assertFalse(
-            [
-                value
-                for layout in xml.findall(".//layout")
-                for name, value in layout.attrib.items()
-                if name
-                in {
-                    "stretch",
-                    "columnstretch",
-                    "rowstretch",
-                    "columnminimumwidth",
-                    "rowminimumheight",
-                }
-                and len(value.split(",")) > 3
-            ]
+        content = xml.find(
+            ".//layout[@name='geometryGridLayoutContent2']"
         )
+        self.assertIsNotNone(content)
+        self.assertEqual(len(content.get("columnstretch", "").split(",")), 15)
+        self.assertEqual(len(content.get("rowstretch", "").split(",")), 15)
 
-    def test_wide_row_uses_widget_stretch_without_layout_list(self) -> None:
+    def test_wide_row_keeps_proportional_layout_stretch(self) -> None:
         faithful = build(
             make_dialog(
                 [
@@ -274,24 +269,12 @@ class SimplifiedLayoutTests(unittest.TestCase):
         rows = xml.findall(".//layout[@class='QHBoxLayout']")
 
         self.assertTrue(rows)
-        self.assertTrue(
-            all(
-                len(row.get("stretch", "").split(",")) <= 5
-                for row in rows
-            )
-        )
         self.assertEqual(
-            [
-                policy.findtext("horstretch")
-                for policy in xml.findall(
-                    ".//widget[@class='QPushButton']"
-                    "/property[@name='sizePolicy']/sizepolicy"
-                )
-            ],
-            ["40"] * 6,
+            rows[0].get("stretch"),
+            "40,5,40,5,40,5,40,5,40,5,40",
         )
 
-    def test_tall_pane_uses_recursive_empty_space_slices(self) -> None:
+    def test_tall_pane_keeps_compact_grid_when_slicing_is_unsafe(self) -> None:
         dialog = replace(
             make_dialog(
                 [("ListBox", "", 0, RectDlu(5, 6, 80, 77))]
@@ -322,25 +305,15 @@ class SimplifiedLayoutTests(unittest.TestCase):
 
         self.assertEqual(
             simplified.transformations,
-            ("grid-to-slicing-layout:1",),
+            ("coordinate-to-compact-grid:1",),
         )
-        self.assertTrue(xml.findall(".//layout[@class='QHBoxLayout']"))
-        self.assertTrue(xml.findall(".//layout[@class='QVBoxLayout']"))
-        self.assertFalse(
-            [
-                value
-                for layout in xml.findall(".//layout")
-                for name, value in layout.attrib.items()
-                if name
-                in {
-                    "stretch",
-                    "columnstretch",
-                    "rowstretch",
-                    "columnminimumwidth",
-                    "rowminimumheight",
-                }
-                and len(value.split(",")) > 5
-            ]
+        content = content_layout(simplified.root_widget)
+        self.assertEqual(content.class_name, "QGridLayout")
+        self.assertLessEqual(len(content.stretch), 5)
+        self.assertLessEqual(len(content.row_stretch), 9)
+        self.assertEqual(
+            len(xml.findall(".//widget[@class='QLineEdit']")),
+            4,
         )
 
     def test_partial_overlap_keeps_faithful_region(self) -> None:
@@ -379,7 +352,11 @@ class SimplifiedLayoutTests(unittest.TestCase):
         xml = ET.fromstring(emit_ui(simplified.root_widget))
 
         self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
-        self.assertEqual(simplified.root_widget.layout.stretch, ())
+        self.assertTrue(simplified.root_widget.layout.stretch)
+        self.assertEqual(
+            len(simplified.root_widget.layout.stretch),
+            len(simplified.root_widget.layout.items) - 1,
+        )
         self.assertIn("grid-to-vertical-bands:1", simplified.transformations)
         self.assertFalse(
             any(
@@ -394,40 +371,11 @@ class SimplifiedLayoutTests(unittest.TestCase):
             if widget.find("./property[@name='rc2uiInternal']") is not None
         ]
         self.assertEqual(internal_widgets, ["rc2uiFontWidthRuler"])
-        track_attributes = {
-            "stretch",
-            "columnstretch",
-            "rowstretch",
-            "columnminimumwidth",
-            "rowminimumheight",
-        }
-        self.assertLessEqual(
-            max(
-                len(value.split(","))
-                for layout in xml.findall(".//layout")
-                for name, value in layout.attrib.items()
-                if name in track_attributes
-            ),
-            5,
-        )
-        self.assertFalse(
-            [
-                layout.get("stretch")
-                for layout in xml.findall(
-                    ".//layout[@class='QHBoxLayout'][@stretch]"
-                )
-                if len(layout.get("stretch", "").split(",")) > 5
-            ]
-        )
-        self.assertFalse(
-            xml.findall(".//layout[@class='QVBoxLayout'][@stretch]")
-        )
-        self.assertLessEqual(
-            max(
-                len(layout.get("columnstretch", "").split(","))
-                for layout in xml.findall(".//layout[@class='QGridLayout']")
-            ),
-            4,
+        root_layout = xml.find("./widget/layout")
+        self.assertIsNotNone(root_layout)
+        self.assertEqual(
+            len(root_layout.get("stretch", "").split(",")),
+            len(simplified.root_widget.layout.items) - 1,
         )
         self.assertGreater(
             simplified.editability_score,
@@ -548,8 +496,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
         "Qt 6 binding is not installed",
     )
     def test_dense_simplified_form_grows_with_dynamic_font(self) -> None:
-        faithful = build(dense_multiline_dialog())
-        simplified = simplify_form(faithful.root_widget)
+        simplified, reference = simplified_case(dense_multiline_dialog())
 
         with tempfile.TemporaryDirectory() as directory_name:
             root = Path(directory_name)
@@ -560,6 +507,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
                 (ui,),
                 report_path=report,
                 required=True,
+                geometry_references={ui: reference},
             )
             payload = json.loads(report.read_text(encoding="utf-8"))
 
@@ -573,7 +521,12 @@ class SimplifiedLayoutTests(unittest.TestCase):
         self.assertFalse(
             any(
                 diagnostic["code"]
-                in {"qt.font-height-clipped", "qt.font-width-clipped"}
+                in {
+                    "qt.font-height-clipped",
+                    "qt.font-width-clipped",
+                    "qt.source-gap-static",
+                    "qt.source-order-changed",
+                }
                 for diagnostic in payload["forms"][0]["diagnostics"]
             )
         )

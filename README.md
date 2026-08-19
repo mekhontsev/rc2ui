@@ -294,24 +294,19 @@ only unambiguous layout regions with smaller Designer-oriented structures:
   retained only inside a band whose genuine local overlap requires it;
 - group boxes and other nested containers are simplified independently.
 
-Vertical bands use explicit gap spacers instead of serializing one root
-`layoutStretch` value for every source row and gap. A one-DLU overlap at a row
-boundary is treated as coordinate noise, preventing an otherwise ordinary pair
-of rows from becoming a large local coordinate grid. Matrices and staggered
-rows also prefer a `QVBoxLayout` of `QHBoxLayout` rows. Row proportions are
-stored on the participating widgets' size policies. A simple row may retain a
-stretch vector of at most five entries so its gaps participate in resize;
-longer rows become a tree of proportional box layouts whose individual vectors
-are still bounded to five entries. Empty source cuts also split pane-shaped
-forms recursively, for example into `HBox(left pane, gap, VBox(right rows))`.
-Only an irreducible overlap region may retain a faithful local grid: rc2ui does
-not merge tracks when doing so would collapse rows or reverse source order.
+Vertical bands and box layouts keep explicit source-proportional stretch
+factors for both controls and gaps. These vectors can be long: removing or
+arbitrarily grouping their entries changes Qt's resize distribution and can
+collapse rows, freeze whitespace, or reverse source order. Compact semantic
+grids are preferred where they are unambiguous; an irregular or overlapping
+region retains the smallest topology-safe grid rather than meeting an
+artificial track-count limit.
 
 Every candidate must preserve pairwise left/right and above/below order,
-overlap, and source-proven shared boundaries. Outer margins and meaningful gaps
-remain explicit, proportionally stretched regions. If a candidate changes
-those invariants, only that container keeps a cleaned faithful grid; unrelated
-containers may still be simplified.
+overlap, source-proven shared boundaries, and proportional resize behavior.
+Outer margins and meaningful gaps remain explicit, proportionally stretched
+regions. If a candidate changes those invariants, only that container keeps a
+cleaned faithful grid; unrelated containers may still be simplified.
 
 Select the mode in the manifest:
 
