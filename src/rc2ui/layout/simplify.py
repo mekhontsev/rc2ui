@@ -107,6 +107,15 @@ class _Simplifier:
             return faithful
         reference = {entry.key: entry.rect for entry in entries}
         semantic_candidates = (
+            (
+                _separator_panels_candidate(
+                    faithful,
+                    entries,
+                    names=self.names,
+                )
+                if len(entries) >= 3
+                else None
+            ),
             _form_candidate(faithful, entries) if len(entries) >= 2 else None,
             _form_grid_candidate(faithful, entries) if len(entries) >= 2 else None,
             (
@@ -165,6 +174,22 @@ class _Simplifier:
                 continue
             if _layout_cost(candidate.layout) >= faithful_cost:
                 continue
+            if (
+                candidate.transformation == "grid-to-separator-panels"
+                and any(
+                    alternative is not None
+                    and alternative is not candidate
+                    and _preserves_topology(
+                        reference,
+                        alternative.placements,
+                    )
+                    and _layout_cost(alternative.layout) < faithful_cost
+                    and _designer_friction(alternative.layout)
+                    < _designer_friction(candidate.layout)
+                    for alternative in candidates
+                )
+            ):
+                continue
             self.simplified_regions += 1
             if candidate.faithful_fallback:
                 self.faithful_fallback_regions += 1
@@ -180,6 +205,627 @@ class _Simplifier:
             widget=self.widget(item.widget) if item.widget is not None else None,
             layout=self.layout(item.layout) if item.layout is not None else None,
         )
+
+
+def _separator_panels_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate | None:
+    """Turn long RC separator lines into explicit nested panel boundaries.
+
+    A separator is much stronger structural evidence than coincident control
+    edges.  Keeping it in the global coordinate mesh makes unrelated left,
+    right, top, and bottom panels share dozens of tiny tracks.  This transform
+    only fires when the line substantially spans a region and ordinary widgets
+    can be assigned to both sides without crossing it.
+    """
+
+    # A horizontal separator already agrees with the normal vertical-band
+    # decomposition, which is both simpler and better at preserving dense
+    # stacked forms.  This candidate is needed when a vertical boundary makes
+    # those global bands semantically wrong; horizontal lines are then still
+    # used recursively to subdivide either pane.
+    if not any(_separator_orientation(entry) == "vertical" for entry in entries):
+        return None
+
+    row_count, column_count = _grid_shape(source)
+    row_weights = _weights(
+        source.minimum_heights or source.row_stretch,
+        row_count,
+    )
+    column_weights = _weights(
+        source.minimum_widths or source.stretch,
+        column_count,
+    )
+    bounds = _Rect(0, 0, sum(column_weights), sum(row_weights))
+    built = _separator_region_layout(
+        source,
+        entries,
+        bounds,
+        names=names,
+        depth=0,
+    )
+    if built is None:
+        return None
+    layout, split_count = built
+    if split_count == 0:
+        return None
+    return _Candidate(
+        layout,
+        {entry.key: entry.rect for entry in entries},
+        "grid-to-separator-panels",
+        source_margins_preserved=True,
+    )
+
+
+def _separator_region_layout(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    bounds: _Rect,
+    *,
+    names: _ObjectNameAllocator,
+    depth: int,
+) -> tuple[QtLayout, int] | None:
+    split = _best_separator_split(entries, bounds)
+    if split is None:
+        if depth == 0:
+            return None
+        return (
+            _terminal_region_layout(
+                source,
+                entries,
+                bounds,
+                names=names,
+            ),
+            0,
+        )
+
+    separator, orientation, before, after = split
+    if orientation == "horizontal":
+        before_bounds = _Rect(
+            bounds.left,
+            bounds.top,
+            bounds.right,
+            max(bounds.top, separator.rect.top),
+        )
+        after_bounds = _Rect(
+            bounds.left,
+            min(bounds.bottom, separator.rect.bottom),
+            bounds.right,
+            bounds.bottom,
+        )
+        class_name = "QVBoxLayout"
+        before_name = "TopPanel"
+        after_name = "BottomPanel"
+        stretch = (
+            max(1, round(before_bounds.height)),
+            max(1, round(separator.rect.height)),
+            max(1, round(after_bounds.height)),
+        )
+    else:
+        before_bounds = _Rect(
+            bounds.left,
+            bounds.top,
+            max(bounds.left, separator.rect.left),
+            bounds.bottom,
+        )
+        after_bounds = _Rect(
+            min(bounds.right, separator.rect.right),
+            bounds.top,
+            bounds.right,
+            bounds.bottom,
+        )
+        class_name = "QHBoxLayout"
+        before_name = "LeftPanel"
+        after_name = "RightPanel"
+        stretch = (
+            max(1, round(before_bounds.width)),
+            max(1, round(separator.rect.width)),
+            max(1, round(after_bounds.width)),
+        )
+
+    if (
+        orientation == "vertical"
+        and _best_separator_split(before, before_bounds) is None
+        and _best_separator_split(after, after_bounds) is None
+    ):
+        return (
+            _shared_vertical_panel_grid(
+                source,
+                separator,
+                before,
+                after,
+                bounds,
+                before_bounds,
+                after_bounds,
+                names=names,
+                depth=depth,
+            ),
+            1,
+        )
+
+    before_result = _separator_region_layout(
+        source,
+        before,
+        before_bounds,
+        names=names,
+        depth=depth + 1,
+    )
+    after_result = _separator_region_layout(
+        source,
+        after,
+        after_bounds,
+        names=names,
+        depth=depth + 1,
+    )
+    assert before_result is not None
+    assert after_result is not None
+    before_layout, before_splits = before_result
+    after_layout, after_splits = after_result
+    before_layout = replace(
+        before_layout,
+        object_name=names.next(f"{source.object_name}{before_name}"),
+    )
+    after_layout = replace(
+        after_layout,
+        object_name=names.next(f"{source.object_name}{after_name}"),
+    )
+    separator_item = replace(
+        separator.item,
+        row=None,
+        column=None,
+        row_span=1,
+        column_span=1,
+    )
+    return (
+        QtLayout(
+            class_name,
+            source.object_name if depth == 0 else names.next(
+                f"{source.object_name}SeparatorRegion"
+            ),
+            (
+                QtLayoutItem(layout=before_layout),
+                separator_item,
+                QtLayoutItem(layout=after_layout),
+            ),
+            properties=_portable_properties(source, zero_spacing=True),
+            stretch=stretch,
+        ),
+        1 + before_splits + after_splits,
+    )
+
+
+def _shared_vertical_panel_grid(
+    source: QtLayout,
+    separator: _Entry,
+    left_entries: tuple[_Entry, ...],
+    right_entries: tuple[_Entry, ...],
+    bounds: _Rect,
+    left_bounds: _Rect,
+    right_bounds: _Rect,
+    *,
+    names: _ObjectNameAllocator,
+    depth: int,
+) -> QtLayout:
+    """Keep both sides on common coarse rows while isolating their columns."""
+
+    entry_side = {
+        entry.key: 0 for entry in left_entries
+    } | {
+        entry.key: 2 for entry in right_entries
+    }
+    bands = _vertical_overlap_bands(left_entries + right_entries)
+    items: list[QtLayoutItem] = []
+    row_weights: list[int] = []
+    previous_bottom = bounds.top
+    for band_index, band in enumerate(bands):
+        band_top = min(entry.rect.top for entry in band)
+        band_bottom = max(entry.rect.bottom for entry in band)
+        gap = band_top - previous_bottom
+        if gap > 0:
+            row_weights.append(max(1, round(gap)))
+        band_row = len(row_weights)
+        row_weights.append(max(1, round(band_bottom - band_top)))
+        for column, side_bounds in ((0, left_bounds), (2, right_bounds)):
+            side_entries = tuple(
+                entry for entry in band if entry_side[entry.key] == column
+            )
+            if not side_entries:
+                continue
+            band_bounds = _Rect(
+                side_bounds.left,
+                band_top,
+                side_bounds.right,
+                band_bottom,
+            )
+            side_layout = _terminal_region_layout(
+                source,
+                side_entries,
+                band_bounds,
+                names=names,
+            )
+            side_name = "Left" if column == 0 else "Right"
+            side_layout = replace(
+                side_layout,
+                object_name=names.next(
+                    f"{source.object_name}{side_name}Band{band_index + 1}"
+                ),
+            )
+            items.append(
+                QtLayoutItem(
+                    layout=side_layout,
+                    row=band_row,
+                    column=column,
+                )
+            )
+        previous_bottom = band_bottom
+    trailing_gap = bounds.bottom - previous_bottom
+    if trailing_gap > 0:
+        row_weights.append(max(1, round(trailing_gap)))
+    if not row_weights:
+        row_weights.append(max(1, round(bounds.height)))
+    items.append(
+        replace(
+            separator.item,
+            row=0,
+            column=1,
+            row_span=len(row_weights),
+            column_span=1,
+        )
+    )
+    column_weights = (
+        max(1, round(left_bounds.width)),
+        max(1, round(separator.rect.width)),
+        max(1, round(right_bounds.width)),
+    )
+    return QtLayout(
+        "QGridLayout",
+        source.object_name if depth == 0 else names.next(
+            f"{source.object_name}VerticalPanels"
+        ),
+        tuple(items),
+        properties=_portable_properties(source, zero_spacing=True),
+        stretch=column_weights,
+        row_stretch=tuple(row_weights),
+        minimum_widths=column_weights,
+        minimum_heights=tuple(row_weights),
+    )
+
+
+def _best_separator_split(
+    entries: tuple[_Entry, ...],
+    bounds: _Rect,
+) -> tuple[
+    _Entry,
+    str,
+    tuple[_Entry, ...],
+    tuple[_Entry, ...],
+] | None:
+    candidates: list[
+        tuple[
+            float,
+            float,
+            _Entry,
+            str,
+            tuple[_Entry, ...],
+            tuple[_Entry, ...],
+        ]
+    ] = []
+    for separator in entries:
+        orientation = _separator_orientation(separator)
+        if orientation is None:
+            continue
+        long_extent = (
+            separator.rect.width
+            if orientation == "horizontal"
+            else separator.rect.height
+        )
+        region_extent = (
+            bounds.width if orientation == "horizontal" else bounds.height
+        )
+        coverage = long_extent / max(1.0, region_extent)
+        if coverage < 0.65:
+            continue
+        partition = _partition_around_separator(
+            entries,
+            separator,
+            orientation,
+        )
+        if partition is None:
+            continue
+        before, after = partition
+        # Prefer the strongest visual boundary.  For equal coverage, a split
+        # with meaningful content on both sides is more useful.
+        balance = min(len(before), len(after)) / max(len(before), len(after))
+        candidates.append(
+            (
+                coverage,
+                balance,
+                separator,
+                orientation,
+                before,
+                after,
+            )
+        )
+    if not candidates:
+        return None
+    _, _, separator, orientation, before, after = max(
+        candidates,
+        # Horizontal boundaries establish common top/bottom regions first.
+        # A vertical split inside either region can then retain shared rows
+        # across its two side panels.
+        key=lambda item: (
+            item[3] == "horizontal",
+            item[0],
+            item[1],
+            item[2].key,
+        ),
+    )
+    return separator, orientation, before, after
+
+
+def _partition_around_separator(
+    entries: tuple[_Entry, ...],
+    separator: _Entry,
+    orientation: str,
+) -> tuple[tuple[_Entry, ...], tuple[_Entry, ...]] | None:
+    before: list[_Entry] = []
+    after: list[_Entry] = []
+    split_start = (
+        separator.rect.top
+        if orientation == "horizontal"
+        else separator.rect.left
+    )
+    split_end = (
+        separator.rect.bottom
+        if orientation == "horizontal"
+        else separator.rect.right
+    )
+    for entry in entries:
+        if entry is separator:
+            continue
+        start = entry.rect.top if orientation == "horizontal" else entry.rect.left
+        end = entry.rect.bottom if orientation == "horizontal" else entry.rect.right
+        if end <= split_start + 1:
+            before.append(entry)
+            continue
+        if start >= split_end - 1:
+            after.append(entry)
+            continue
+        if _separator_orientation(entry) is not None:
+            center = (
+                entry.rect.vertical_center
+                if orientation == "horizontal"
+                else entry.rect.horizontal_center
+            )
+            split_center = (split_start + split_end) / 2
+            (before if center < split_center else after).append(entry)
+            continue
+        # Small hand-authored overshoots are harmless because the native
+        # parent clips them.  A real widget crossing the boundary is evidence
+        # that the line is decorative rather than a panel separator.
+        overlap = min(end, split_end) - max(start, split_start)
+        if overlap <= 2:
+            center = (
+                entry.rect.vertical_center
+                if orientation == "horizontal"
+                else entry.rect.horizontal_center
+            )
+            split_center = (split_start + split_end) / 2
+            (before if center < split_center else after).append(entry)
+            continue
+        return None
+    if not before or not after:
+        return None
+    return tuple(before), tuple(after)
+
+
+def _separator_orientation(entry: _Entry) -> str | None:
+    widget = entry.item.widget
+    if widget is None or widget.class_name != "QFrame":
+        return None
+    shape = next(
+        (
+            property_.value.value
+            for property_ in widget.properties
+            if property_.name == "frameShape"
+            and isinstance(property_.value, QtEnum)
+        ),
+        None,
+    )
+    if shape == "QFrame::HLine":
+        return "horizontal"
+    if shape == "QFrame::VLine":
+        return "vertical"
+    return None
+
+
+def _terminal_region_layout(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    bounds: _Rect,
+    *,
+    names: _ObjectNameAllocator,
+) -> QtLayout:
+    """Use only strong local patterns inside a separator-defined panel."""
+
+    faithful = _coordinate_region_layout(
+        source,
+        entries,
+        bounds,
+        names=names,
+    )
+    if len(entries) < 2:
+        return faithful
+    reference = {entry.key: entry.rect for entry in entries}
+    # Horizontal rows (most often a bottom button strip) are independent of
+    # the vertical scale shared by adjacent panels.  Do not turn a whole side
+    # pane into a private VBox/FormLayout: its font-driven row heights could
+    # then drift relative to the other side of the separator.
+    candidates = (
+        _axis_candidate(source, entries, horizontal=True, names=names),
+    )
+    faithful_cost = _layout_cost(faithful)
+    faithful_friction = _designer_friction(faithful)
+    for candidate in candidates:
+        if candidate is None or not _preserves_topology(
+            reference,
+            candidate.placements,
+        ):
+            continue
+        wrapped = _wrap_in_region_margins(
+            source,
+            entries,
+            candidate,
+            bounds,
+            names=names,
+        )
+        if (
+            _layout_cost(wrapped.layout) < faithful_cost
+            or _designer_friction(wrapped.layout) < faithful_friction
+        ):
+            return wrapped.layout
+    return faithful
+
+
+def _wrap_in_region_margins(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    candidate: _Candidate,
+    bounds: _Rect,
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate:
+    content_left = min(entry.rect.left for entry in entries)
+    content_top = min(entry.rect.top for entry in entries)
+    content_right = max(entry.rect.right for entry in entries)
+    content_bottom = max(entry.rect.bottom for entry in entries)
+    horizontal = _three_zone_weights(
+        content_left - bounds.left,
+        content_right - bounds.left,
+        bounds.width,
+    )
+    vertical = _three_zone_weights(
+        content_top - bounds.top,
+        content_bottom - bounds.top,
+        bounds.height,
+    )
+    inner = replace(
+        candidate.layout,
+        object_name=names.next(f"{source.object_name}PanelContent"),
+    )
+    wrapper = QtLayout(
+        "QGridLayout",
+        names.next(f"{source.object_name}Panel"),
+        (
+            QtLayoutItem(layout=inner, row=1, column=1),
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}PanelExtentMarker"),
+                    "horizontal",
+                    size_type="Minimum",
+                    size_hint=0,
+                ),
+                row=2,
+                column=2,
+            ),
+        ),
+        properties=_zero_spacing_properties(source.properties),
+        stretch=horizontal,
+        row_stretch=vertical,
+        minimum_widths=horizontal,
+        minimum_heights=vertical,
+    )
+    return replace(candidate, layout=wrapper)
+
+
+def _coordinate_region_layout(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    bounds: _Rect,
+    *,
+    names: _ObjectNameAllocator,
+) -> QtLayout:
+    horizontal_edges = {bounds.left, bounds.right}
+    vertical_edges = {bounds.top, bounds.bottom}
+    clipped: dict[str, _Rect] = {}
+    for entry in entries:
+        rect = _Rect(
+            max(bounds.left, min(bounds.right, entry.rect.left)),
+            max(bounds.top, min(bounds.bottom, entry.rect.top)),
+            max(bounds.left, min(bounds.right, entry.rect.right)),
+            max(bounds.top, min(bounds.bottom, entry.rect.bottom)),
+        )
+        if rect.width <= 0 or rect.height <= 0:
+            # This should only be reachable for a malformed line at the exact
+            # region boundary.  Keeping a one-unit track preserves the item.
+            rect = _Rect(
+                rect.left,
+                rect.top,
+                max(rect.left + 1, rect.right),
+                max(rect.top + 1, rect.bottom),
+            )
+        clipped[entry.key] = rect
+        horizontal_edges.update((rect.left, rect.right))
+        vertical_edges.update((rect.top, rect.bottom))
+    columns = sorted(horizontal_edges)
+    rows = sorted(vertical_edges)
+    column_for = {edge: index for index, edge in enumerate(columns)}
+    row_for = {edge: index for index, edge in enumerate(rows)}
+    column_weights = tuple(
+        max(1, round(right - left))
+        for left, right in zip(columns, columns[1:])
+    )
+    row_weights = tuple(
+        max(1, round(bottom - top))
+        for top, bottom in zip(rows, rows[1:])
+    )
+    items = [
+        replace(
+            entry.item,
+            row=row_for[clipped[entry.key].top],
+            column=column_for[clipped[entry.key].left],
+            row_span=(
+                row_for[clipped[entry.key].bottom]
+                - row_for[clipped[entry.key].top]
+            ),
+            column_span=(
+                column_for[clipped[entry.key].right]
+                - column_for[clipped[entry.key].left]
+            ),
+        )
+        for entry in entries
+    ]
+    content_right = max(rect.right for rect in clipped.values())
+    content_bottom = max(rect.bottom for rect in clipped.values())
+    if content_right < bounds.right or content_bottom < bounds.bottom:
+        # QGridLayout does not distribute surplus proportionally into a wholly
+        # empty trailing track on every Qt style.  A zero-sized marker makes
+        # that source margin a real participant without covering the canvas.
+        items.append(
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}PanelExtentMarker"),
+                    "horizontal",
+                    size_type="Minimum",
+                    size_hint=0,
+                ),
+                row=len(row_weights) - 1,
+                column=len(column_weights) - 1,
+            )
+        )
+    return QtLayout(
+        "QGridLayout",
+        names.next(f"{source.object_name}PanelGrid"),
+        tuple(items),
+        properties=_portable_properties(source, zero_spacing=True),
+        stretch=column_weights,
+        row_stretch=row_weights,
+        minimum_widths=column_weights,
+        minimum_heights=row_weights,
+    )
 
 
 def simplify_form(root_widget: QtWidget) -> SimplificationResult:

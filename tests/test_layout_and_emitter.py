@@ -444,6 +444,25 @@ class LayoutAndEmitterTests(unittest.TestCase):
             {item.code for item in result.diagnostics},
         )
 
+    def test_decorative_separator_does_not_expand_client_bounds(self) -> None:
+        dialog = replace(
+            make_dialog(
+                [
+                    ("Button", "Inside", 0, RectDlu(10, 10, 50, 14)),
+                    ("Static", "", 0x10, RectDlu(0, 55, 240, 1)),
+                ]
+            ),
+            rect=RectDlu(0, 0, 180, 70),
+        )
+
+        result = build(dialog)
+
+        self.assertEqual(result.layout_bounds, RectDlu(0, 0, 180, 70))
+        self.assertEqual(result.rect_for(1), RectDlu(0, 55, 180, 1))
+        codes = {item.code for item in result.diagnostics}
+        self.assertIn("layout.separator-clipped-to-client", codes)
+        self.assertNotIn("layout.client-bounds-extended", codes)
+
     def test_parks_a_far_offscreen_runtime_control_outside_the_layout(self) -> None:
         dialog = make_dialog(
             [

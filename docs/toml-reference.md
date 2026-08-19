@@ -163,11 +163,14 @@ uses a non-UTF code page.
 is the default. It is intended for maximum geometric fidelity. Set
 `layout_mode = "simplified"` to post-process that same reconstruction into
 smaller `QFormLayout`, `QHBoxLayout`, `QVBoxLayout`, and compact `QGridLayout`
-regions where doing so preserves topology. Source margins and positive gaps
-remain proportional layout tracks. Ambiguous or constraint-breaking regions
-fall back independently to a cleaned faithful grid. The direct command-line
-equivalent is `convert --layout-mode simplified`; it may also override the
-manifest for a one-off run.
+regions where doing so preserves topology. Substantial vertical separators may
+form coarse left/separator/right grids with shared row bands; perpendicular
+horizontal lines create nested top/bottom regions. Source margins and positive
+gaps remain proportional layout tracks. Ambiguous, crossing, or structurally
+worse candidates fall back independently to another safe candidate or a
+cleaned faithful grid. The direct command-line equivalent is
+`convert --layout-mode simplified`; it may also override the manifest for a
+one-off run.
 
 Per-form report fields `layout_mode_requested`, `layout_mode_used`,
 `editability_score`, `simplified_regions`, `faithful_fallback_regions`, and

@@ -290,6 +290,9 @@ only unambiguous layout regions with smaller Designer-oriented structures:
   a compact three-column `QGridLayout` when the source has a scalable gap;
 - single rows and columns become `QHBoxLayout` and `QVBoxLayout`;
 - regular matrices become compact logical grids;
+- long vertical separators create explicit left/right panels; perpendicular
+  horizontal separators create nested top/bottom regions, while both sides of
+  a vertical boundary retain common coarse row bands;
 - complex dialogs are split into editable vertical bands, with a fine grid
   retained only inside a band whose genuine local overlap requires it;
 - group boxes and other nested containers are simplified independently.
@@ -338,7 +341,13 @@ bottom guide instead of drifting with unrelated nested grid calculations.
 `STATIC` controls with `SS_ETCHEDVERT`, `SS_ETCHEDHORZ`, or equivalent narrow
 frame geometry become expanding `QFrame::VLine` or `QFrame::HLine` widgets.
 Separators partition row and column evidence into independent regions so
-controls stay on the same side during resize.
+controls stay on the same side during resize. A decorative separator that
+extends beyond the declared client is clipped on its long axis, matching native
+child-window clipping instead of enlarging the Qt form. In `simplified` mode a
+long vertical separator may become the middle column of a coarse panel grid.
+The two sides share horizontal bands, so font growth cannot make corresponding
+left/right rows drift independently. This rewrite is kept only when it improves
+structural editability over the other topology-safe candidates.
 
 Grid stretch factors are proportional to source DLU intervals. Minimum track
 sizes preserve the initial proportions before Qt distributes surplus space.

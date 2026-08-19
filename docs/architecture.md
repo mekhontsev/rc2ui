@@ -661,8 +661,11 @@ members from at least two sibling groups are normalized. This preserves a
 global field guide across group boundaries without allowing one group's
 internal rows to restructure another group.
 
-Controls outside the declared client rectangle extend effective layout bounds
-and generate a diagnostic instead of being clipped.
+Ordinary controls outside the declared client rectangle extend effective
+layout bounds and generate a diagnostic instead of being clipped. A decorative
+separator is different: native child-window painting clips its overlong axis to
+the parent client, so rc2ui clips that axis too and reports
+`layout.separator-clipped-to-client` without enlarging the form.
 
 ### Separators and panes
 
@@ -674,6 +677,16 @@ controls on opposite sides cannot pull each other into one form layout.
 Perpendicular separators form nested regions. A short decorative line that does
 not divide the visual area remains an ordinary grid decoration and does not
 create a false pane.
+
+In simplified output, a substantial vertical separator can become the middle
+column of a coarse three-column panel grid. Left and right content is grouped
+into common vertical-overlap bands, preserving cross-pane top/bottom relations
+when fonts grow. A spanning horizontal separator is applied first, producing
+nested top/bottom regions and allowing a footer button row to remain a normal
+horizontal layout. Ordinary controls that genuinely cross a candidate boundary
+reject the split; one- or two-DLU authored overshoot is tolerated. The rewrite
+is also rejected when another topology-safe candidate has lower Designer
+friction.
 
 ### Tracks, anchors, and spans
 
@@ -720,11 +733,12 @@ The simplifier walks nested widgets and layouts from the inside out. For each
 faithful `QGridLayout`, it proposes deterministic candidates in increasing
 generality:
 
-1. label/editor form rows;
-2. one-dimensional box layouts;
-3. a compact coordinate matrix;
-4. editable vertical bands for a complex container;
-5. a cleaned faithful grid.
+1. separator-defined panels where a substantial vertical boundary exists;
+2. label/editor form rows;
+3. one-dimensional box layouts;
+4. a compact coordinate matrix;
+5. editable vertical bands for a complex container;
+6. a cleaned faithful grid.
 
 A form row with a positive source gap uses a three-column grid rather than a
 `QFormLayout`, because the latter's inter-column spacing is style-controlled
@@ -737,6 +751,11 @@ equal starts and ends. Candidate structural cost must also be lower than the
 faithful region. Rejection is local: the current container keeps a cleaned
 faithful grid while already accepted descendants and unrelated containers are
 unchanged.
+
+Separator-panel candidates have an additional editability guard. They are not
+selected merely because a long line exists: a lower-friction valid form,
+matrix, band, or cleaned-grid candidate wins. This keeps simplified output from
+becoming structurally worse on sparse or unusually shaped panes.
 
 For a complex root, vertical-overlap components may become rows of a root
 `QVBoxLayout`. Ordinary rows use box or compact semantic layouts. A fine
@@ -1137,6 +1156,8 @@ The test suite covers these architectural properties:
 - mixed-height rows and multi-track spans;
 - group-box containment and crossing rejection;
 - separator-created panes and nested regions;
+- coarse shared rows across simplified separator panels, including overlong
+  native separators and footer regions;
 - one-DLU gaps and proportional resize growth;
 - runtime alternatives and z-order evidence;
 - topology-preserving multilingual correction;

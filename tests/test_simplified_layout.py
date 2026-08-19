@@ -76,6 +76,58 @@ def simplified_case(dialog):
     return simplified, reference
 
 
+def separator_panel_dialog():
+    """Obfuscated regression for aligned side panels and a button footer."""
+
+    hidden_checkbox = 0x40000000 | 0x00002003
+    specs = [
+        ("ComboBox", "", 3, RectDlu(6, 11, 108, 20)),
+        ("ComboBox", "", 3, RectDlu(123, 11, 74, 20)),
+        ("Edit", "", 0, RectDlu(6, 66, 84, 12)),
+        ("Button", "Use current value", 3, RectDlu(6, 82, 93, 11)),
+        ("Edit", "", 0, RectDlu(110, 66, 75, 12)),
+        ("Button", "Fill", 0, RectDlu(110, 81, 86, 12)),
+        ("ComboBox", "", 3, RectDlu(6, 107, 126, 20)),
+        ("Edit", "", 0, RectDlu(6, 135, 126, 12)),
+        ("ComboBox", "", 3, RectDlu(209, 11, 108, 20)),
+        ("Button", "Use schedule", 3, RectDlu(212, 29, 82, 10)),
+        ("Edit", "", 0, RectDlu(209, 40, 108, 12)),
+        ("Edit", "", 0, RectDlu(209, 66, 61, 12)),
+        ("Edit", "", 0, RectDlu(272, 66, 45, 12)),
+        ("Button", "Set value", 0, RectDlu(209, 81, 108, 12)),
+        ("Edit", "", 0, RectDlu(209, 107, 108, 12)),
+        (
+            "Button",
+            "Optional panel setting",
+            hidden_checkbox,
+            RectDlu(209, 127, 91, 20),
+        ),
+        ("Button", "OK", 1, RectDlu(38, 159, 36, 14)),
+        ("Button", "Back", 0, RectDlu(78, 159, 37, 14)),
+        ("Button", "Cancel", 0, RectDlu(119, 159, 36, 14)),
+        ("Button", "More", 0, RectDlu(185, 159, 24, 14)),
+        # Container declarations deliberately follow their children, as they
+        # often do in hand-authored RC files.
+        ("Button", "Source", 7, RectDlu(3, 1, 114, 27)),
+        ("Button", "Account", 7, RectDlu(119, 1, 81, 27)),
+        ("Button", "Price", 7, RectDlu(3, 56, 102, 41)),
+        ("Button", "Quantity", 7, RectDlu(106, 56, 94, 41)),
+        ("Button", "Client", 7, RectDlu(3, 97, 132, 27)),
+        ("Button", "Comment", 7, RectDlu(3, 125, 132, 27)),
+        ("Button", "Execution", 7, RectDlu(205, 1, 115, 27)),
+        ("Button", "", 7, RectDlu(205, 28, 115, 27)),
+        ("Button", "Value", 7, RectDlu(205, 56, 115, 41)),
+        ("Button", "Limit", 7, RectDlu(205, 97, 115, 27)),
+        ("Static", "", 0x10, RectDlu(0, 155, 361, 1)),
+        ("Static", "", 0x11, RectDlu(202, 0, 1, 156)),
+    ]
+    return replace(
+        make_dialog(specs),
+        rect=RectDlu(0, 0, 323, 177),
+        caption="Panel sample",
+    )
+
+
 class SimplifiedLayoutTests(unittest.TestCase):
     def test_repeated_label_editor_rows_become_form_layout(self) -> None:
         faithful = build(
@@ -388,6 +440,62 @@ class SimplifiedLayoutTests(unittest.TestCase):
         )
         self.assertIsNotNone(checkbox_policy)
         self.assertEqual(checkbox_policy.get("hsizetype"), "Minimum")
+
+    def test_perpendicular_separators_create_coarse_shared_panel_rows(
+        self,
+    ) -> None:
+        dialog = separator_panel_dialog()
+        simplified, reference = simplified_case(dialog)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+
+        self.assertIn(
+            "grid-to-separator-panels:1",
+            simplified.transformations,
+        )
+        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        top = simplified.root_widget.layout.items[0].layout
+        self.assertIsNotNone(top)
+        self.assertEqual(top.class_name, "QGridLayout")
+        self.assertEqual(len(top.stretch), 3)
+        self.assertLessEqual(len(top.row_stretch), 9)
+        self.assertGreater(
+            simplified.editability_score,
+            editability_score(build(dialog).root_widget),
+        )
+
+        emitted_names = {
+            widget.get("name") for widget in xml.findall(".//widget")
+        }
+        self.assertTrue(
+            {
+                control.object_name for control in reference.controls
+            }.issubset(emitted_names)
+        )
+        checkboxes = xml.findall(".//widget[@class='QCheckBox']")
+        self.assertEqual(len(checkboxes), 3)
+        hidden = next(
+            checkbox
+            for checkbox in checkboxes
+            if checkbox.findtext("./property[@name='visible']/bool") == "false"
+        )
+        self.assertEqual(
+            " ".join(
+                hidden.findtext("./property[@name='text']/string").split()
+            ),
+            "Optional panel setting",
+        )
+        self.assertEqual(
+            hidden.findtext("./property[@name='visible']/bool"),
+            "false",
+        )
+
+        stretch_lengths = [
+            len(layout.get(attribute, "").split(","))
+            for layout in xml.findall(".//layout")
+            for attribute in ("columnstretch", "rowstretch")
+            if layout.get(attribute)
+        ]
+        self.assertLessEqual(max(stretch_lengths), 9)
 
     def test_nested_group_is_simplified_independently(self) -> None:
         faithful = build(

@@ -156,10 +156,16 @@ class LayoutBuilder:
             properties = mapped.properties
             if target := buddy_targets.get(mapped.control.order):
                 properties += (QtProperty("buddy", QtCString(target)),)
+            source_rect = control_visual_rect(mapped.control)
+            layout_rect = _clip_separator_to_client(
+                source_rect,
+                mapped.separator_orientation,
+                dialog,
+            )
             nodes[mapped.control.order] = VisualNode(
                 order=mapped.control.order,
                 orders=(mapped.control.order,),
-                rect=control_visual_rect(mapped.control),
+                rect=layout_rect,
                 mapped=mapped,
                 widget=QtWidget(
                     class_name=mapped.qt_class,
@@ -170,10 +176,24 @@ class LayoutBuilder:
                 ),
                 children=[],
             )
-            self._resolved_rects[mapped.control.order] = control_visual_rect(
-                mapped.control
-            )
+            self._resolved_rects[mapped.control.order] = layout_rect
             self._selected_anchors[mapped.control.order] = (None, None)
+            if layout_rect != source_rect:
+                diagnostics.append(
+                    Diagnostic(
+                        code="layout.separator-clipped-to-client",
+                        severity=Severity.INFO,
+                        message=(
+                            f"decorative separator {decision.object_name!r} "
+                            "was clipped to the declared dialog client"
+                        ),
+                        location=(
+                            f"{dialog.key.source}:"
+                            f"{dialog.key.resource_id.display_name}:"
+                            f"{mapped.control.key.resource_id.display_name}"
+                        ),
+                    )
+                )
             if mapped.warning:
                 diagnostics.append(
                     Diagnostic(
@@ -1269,6 +1289,32 @@ def _effective_client_bounds(
     right = max((dialog.rect.width, *(node.rect.right for node in nodes)))
     bottom = max((dialog.rect.height, *(node.rect.bottom for node in nodes)))
     return RectDlu(left, top, right - left, bottom - top)
+
+
+def _clip_separator_to_client(
+    rect: RectDlu,
+    orientation: SeparatorOrientation | None,
+    dialog: Dialog,
+) -> RectDlu:
+    """Clip a decorative line along its long axis to the Win32 client.
+
+    Native child windows are clipped by their parent.  A separator whose
+    authoring width or height overshoots the dialog is therefore not evidence
+    that the dialog itself should grow.  Only the line's long axis is clipped;
+    an ordinary control outside the client remains meaningful layout evidence.
+    """
+
+    if orientation is SeparatorOrientation.HORIZONTAL:
+        left = max(0, rect.left)
+        right = min(dialog.rect.width, rect.right)
+        if right > left:
+            return RectDlu(left, rect.y, right - left, rect.height)
+    elif orientation is SeparatorOrientation.VERTICAL:
+        top = max(0, rect.top)
+        bottom = min(dialog.rect.height, rect.bottom)
+        if bottom > top:
+            return RectDlu(rect.x, top, rect.width, bottom - top)
+    return rect
 
 
 def _layout_topology_diagnostics(
