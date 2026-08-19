@@ -305,6 +305,13 @@ grids are preferred where they are unambiguous; an irregular or overlapping
 region retains the smallest topology-safe grid rather than meeting an
 artificial track-count limit.
 
+A compact guide grid is also rejected when its weighted span would give any
+control less than half of the control's source width or height. The affected
+region then uses editable row or column bands. This fallback remains local: a
+dialog with wrapped text, or a region with strong shared guides (including
+same-class edges aligned within three DLU), keeps its compact grid because
+independent box layouts could break font growth or distant alignment.
+
 Every candidate must preserve pairwise left/right and above/below order,
 overlap, source-proven shared boundaries, and proportional resize behavior.
 Outer margins and meaningful gaps remain explicit, proportionally stretched

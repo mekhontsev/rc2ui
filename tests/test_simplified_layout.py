@@ -128,6 +128,29 @@ def separator_panel_dialog():
     )
 
 
+def stacked_field_dialog():
+    return replace(
+        make_dialog(
+            [
+                ("Edit", "", 0, RectDlu(5, 5, 84, 12)),
+                (
+                    "msctls_updown32",
+                    "",
+                    0,
+                    RectDlu(89, 5, 10, 12),
+                ),
+                (
+                    "Button",
+                    "Use current value",
+                    3,
+                    RectDlu(5, 22, 93, 10),
+                ),
+            ]
+        ),
+        rect=RectDlu(0, 0, 105, 38),
+    )
+
+
 class SimplifiedLayoutTests(unittest.TestCase):
     def test_repeated_label_editor_rows_become_form_layout(self) -> None:
         faithful = build(
@@ -267,6 +290,90 @@ class SimplifiedLayoutTests(unittest.TestCase):
             simplified.transformations,
             ("coordinate-to-compact-grid:1",),
         )
+
+    def test_compact_grid_cannot_squeeze_control_above_following_row(
+        self,
+    ) -> None:
+        faithful = build(stacked_field_dialog())
+
+        simplified = simplify_form(faithful.root_widget)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+
+        self.assertNotIn(
+            "coordinate-to-compact-grid:1",
+            simplified.transformations,
+        )
+        self.assertIn(
+            "grid-to-vertical-bands:1",
+            simplified.transformations,
+        )
+        self.assertIn(
+            "84,10",
+            {
+                layout.get("stretch")
+                for layout in xml.findall(".//layout[@class='QHBoxLayout']")
+            },
+        )
+
+    def test_wrapped_label_keeps_font_safe_local_grid_on_extent_loss(self) -> None:
+        faithful = build(
+            replace(
+                make_dialog(
+                    [
+                        ("Edit", "", 0, RectDlu(5, 5, 84, 12)),
+                        (
+                            "msctls_updown32",
+                            "",
+                            0,
+                            RectDlu(89, 5, 10, 12),
+                        ),
+                        (
+                            "Static",
+                            "A long explanatory message that wraps onto lines.",
+                            0,
+                            RectDlu(5, 22, 93, 28),
+                        ),
+                    ]
+                ),
+                rect=RectDlu(0, 0, 105, 56),
+            )
+        )
+
+        simplified = simplify_form(faithful.root_widget)
+
+        self.assertEqual(
+            simplified.transformations,
+            ("coordinate-to-compact-grid:1",),
+        )
+        self.assertEqual(simplified.faithful_fallback_regions, 1)
+
+    def test_repeated_cross_row_alignment_keeps_local_grid(self) -> None:
+        faithful = build(
+            replace(
+                make_dialog(
+                    [
+                        ("Edit", "", 0, RectDlu(5, 5, 84, 12)),
+                        (
+                            "msctls_updown32",
+                            "",
+                            0,
+                            RectDlu(89, 5, 10, 12),
+                        ),
+                        ("Button", "First", 3, RectDlu(5, 22, 93, 10)),
+                        ("Button", "Second", 3, RectDlu(7, 37, 93, 10)),
+                    ]
+                ),
+                rect=RectDlu(0, 0, 105, 53),
+            )
+        )
+
+        simplified = simplify_form(faithful.root_widget)
+
+        self.assertEqual(
+            simplified.transformations,
+            ("coordinate-to-compact-grid:1",),
+        )
+        self.assertEqual(simplified.faithful_fallback_regions, 1)
 
     def test_diagonal_controls_keep_proportional_grid_tracks(self) -> None:
         faithful = build(
@@ -637,6 +744,39 @@ class SimplifiedLayoutTests(unittest.TestCase):
                 }
                 for diagnostic in payload["forms"][0]["diagnostics"]
             )
+        )
+
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_stacked_field_keeps_extent_and_font_height(self) -> None:
+        simplified, reference = simplified_case(stacked_field_dialog())
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            ui = root / "stacked-field.ui"
+            report = root / "qt-report.json"
+            ui.write_text(emit_ui(simplified.root_widget), encoding="utf-8")
+            run_qt_checks(
+                (ui,),
+                report_path=report,
+                required=True,
+                geometry_references={ui: reference},
+            )
+            payload = json.loads(report.read_text(encoding="utf-8"))
+
+        rejected = {
+            "qt.font-height-clipped",
+            "qt.source-size-collapse",
+            "qt.unexpected-overlap",
+        }
+        self.assertFalse(
+            [
+                diagnostic
+                for diagnostic in payload["forms"][0]["diagnostics"]
+                if diagnostic["code"] in rejected
+            ]
         )
 
     @unittest.skipUnless(

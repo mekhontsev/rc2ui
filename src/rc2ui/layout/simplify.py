@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 
 from rc2ui.qt.model import (
@@ -13,6 +13,10 @@ from rc2ui.qt.model import (
     QtSpacer,
     QtWidget,
 )
+
+
+_MIN_COMPACT_SOURCE_EXTENT_RATIO = 0.5
+_NEAR_ALIGNMENT_TOLERANCE_DLU = 3.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -79,11 +83,17 @@ class _ObjectNameAllocator:
 
 
 class _Simplifier:
-    def __init__(self, used_names: Iterable[str]) -> None:
+    def __init__(
+        self,
+        used_names: Iterable[str],
+        *,
+        font_height_sensitive: bool,
+    ) -> None:
         self.simplified_regions = 0
         self.faithful_fallback_regions = 0
         self.transformations: Counter[str] = Counter()
         self.names = _ObjectNameAllocator(used_names)
+        self.font_height_sensitive = font_height_sensitive
 
     def widget(self, widget: QtWidget) -> QtWidget:
         children = tuple(self.widget(child) for child in widget.children)
@@ -106,6 +116,43 @@ class _Simplifier:
         if not entries:
             return faithful
         reference = {entry.key: entry.rect for entry in entries}
+        raw_compact_candidate, compact_rejected_for_extent = (
+            _compact_grid_candidate(faithful, entries)
+            if len(entries) >= 2
+            else (None, False)
+        )
+        preserve_compact_alignment = _has_strong_compact_alignment(entries)
+        if (
+            compact_rejected_for_extent
+            and (
+                self.font_height_sensitive
+                or preserve_compact_alignment
+            )
+            and raw_compact_candidate is not None
+        ):
+            raw_compact_candidate = replace(
+                raw_compact_candidate,
+                faithful_fallback=True,
+            )
+        compact_rejected_for_extent = (
+            compact_rejected_for_extent
+            and not self.font_height_sensitive
+            and not preserve_compact_alignment
+        )
+        compact_candidate = (
+            None
+            if compact_rejected_for_extent
+            else raw_compact_candidate
+        )
+        vertical_bands_candidate = (
+            _vertical_bands_candidate(
+                faithful,
+                entries,
+                names=self.names,
+            )
+            if len(entries) >= 3
+            else None
+        )
         semantic_candidates = (
             (
                 _separator_panels_candidate(
@@ -138,20 +185,8 @@ class _Simplifier:
                 if len(entries) >= 2
                 else None
             ),
-            (
-                _compact_grid_candidate(faithful, entries)
-                if len(entries) >= 2
-                else None
-            ),
-            (
-                _vertical_bands_candidate(
-                    faithful,
-                    entries,
-                    names=self.names,
-                )
-                if len(entries) >= 3
-                else None
-            ),
+            compact_candidate,
+            vertical_bands_candidate,
         )
         candidates = tuple(
             (
@@ -831,7 +866,10 @@ def _coordinate_region_layout(
 def simplify_form(root_widget: QtWidget) -> SimplificationResult:
     """Create a Designer-oriented form without mutating faithful planning."""
 
-    simplifier = _Simplifier(_object_names(root_widget))
+    simplifier = _Simplifier(
+        _object_names(root_widget),
+        font_height_sensitive=_widget_contains_wrapped_label(root_widget),
+    )
     simplified = _retain_root_width_ruler(
         root_widget,
         simplifier.widget(root_widget),
@@ -1347,7 +1385,22 @@ def _horizontal_band_candidate(
             names=names,
         )
         if candidate is None:
-            candidate = _compact_grid_candidate(source, entries)
+            candidate, rejected_for_extent = _compact_grid_candidate(
+                source,
+                entries,
+            )
+            if rejected_for_extent:
+                candidate = (
+                    replace(
+                        candidate,
+                        faithful_fallback=True,
+                    )
+                    if (
+                        candidate is not None
+                        and _entries_contain_wrapped_label(entries)
+                    )
+                    else None
+                )
         if candidate is None or not _preserves_topology(
             {entry.key: entry.rect for entry in entries},
             candidate.placements,
@@ -1419,7 +1472,7 @@ def _coordinate_subgrid_candidate(
 def _compact_grid_candidate(
     source: QtLayout,
     entries: tuple[_Entry, ...],
-) -> _Candidate | None:
+) -> tuple[_Candidate | None, bool]:
     guide_entries = tuple(
         entry
         for entry in entries
@@ -1433,7 +1486,7 @@ def _compact_grid_candidate(
         entry.rect.horizontal_center for entry in guide_entries
     )
     if not row_guides or not column_guides:
-        return None
+        return None, False
     row_weights = _guide_track_weights(
         row_guides,
         entries,
@@ -1480,7 +1533,7 @@ def _compact_grid_candidate(
             row + row_span,
         )
 
-    return _Candidate(
+    candidate = _Candidate(
         QtLayout(
             "QGridLayout",
             source.object_name,
@@ -1493,6 +1546,127 @@ def _compact_grid_candidate(
         ),
         placements,
         "coordinate-to-compact-grid",
+    )
+    if not _compact_grid_preserves_source_extents(
+        entries,
+        placements,
+        column_weights,
+        row_weights,
+    ):
+        return candidate, True
+
+    return candidate, False
+
+
+def _compact_grid_preserves_source_extents(
+    entries: tuple[_Entry, ...],
+    placements: dict[str, _Rect],
+    column_weights: tuple[int, ...],
+    row_weights: tuple[int, ...],
+) -> bool:
+    """Reject a semantic grid that discards most of a source extent.
+
+    Guides come from control centres in every row and column.  Two nearby
+    centres in different rows can therefore create tiny tracks under a much
+    wider or taller control.  Pairwise topology still passes, but Qt is then
+    allowed to squeeze that control into those tracks.  Such a region is safer
+    as editable row/column bands (or a local faithful fallback).
+    """
+
+    for entry in entries:
+        placement = placements[entry.key]
+        modeled_width = sum(
+            column_weights[int(placement.left) : int(placement.right)]
+        )
+        modeled_height = sum(
+            row_weights[int(placement.top) : int(placement.bottom)]
+        )
+        if (
+            modeled_width
+            < entry.rect.width * _MIN_COMPACT_SOURCE_EXTENT_RATIO
+        ):
+            return False
+        if (
+            modeled_height
+            < entry.rect.height * _MIN_COMPACT_SOURCE_EXTENT_RATIO
+        ):
+            return False
+    return True
+
+
+def _entries_contain_wrapped_label(entries: tuple[_Entry, ...]) -> bool:
+    return any(_item_contains_wrapped_label(entry.item) for entry in entries)
+
+
+def _has_strong_compact_alignment(entries: tuple[_Entry, ...]) -> bool:
+    """Keep a shared grid when independent rows would sever strong guides."""
+
+    for edge in (
+        lambda entry: entry.rect.left,
+        lambda entry: entry.rect.right,
+    ):
+        for group in _near_alignment_groups(entries, edge):
+            if _alignment_group_is_strong(group):
+                return True
+
+    return any(
+        _alignment_group_is_strong(group)
+        for group in _near_alignment_groups(
+            entries,
+            lambda entry: entry.rect.vertical_center,
+        )
+    )
+
+
+def _near_alignment_groups(
+    entries: tuple[_Entry, ...],
+    value_for: Callable[[_Entry], float],
+    *,
+    tolerance: float = _NEAR_ALIGNMENT_TOLERANCE_DLU,
+) -> tuple[list[_Entry], ...]:
+    groups: list[list[_Entry]] = []
+    previous: float | None = None
+    for entry in sorted(entries, key=lambda item: (value_for(item), item.key)):
+        value = value_for(entry)
+        if previous is None or value - previous > tolerance:
+            groups.append([entry])
+        else:
+            groups[-1].append(entry)
+        previous = value
+    return tuple(groups)
+
+
+def _alignment_group_is_strong(entries: list[_Entry]) -> bool:
+    if len(entries) >= 3:
+        return True
+    classes = [
+        entry.item.widget.class_name
+        for entry in entries
+        if entry.item.widget is not None
+    ]
+    return len(classes) >= 2 and len(set(classes)) < len(classes)
+
+
+def _item_contains_wrapped_label(item: QtLayoutItem) -> bool:
+    if item.widget is not None:
+        return _widget_contains_wrapped_label(item.widget)
+    if item.layout is not None:
+        return any(
+            _item_contains_wrapped_label(child)
+            for child in item.layout.items
+        )
+    return False
+
+
+def _widget_contains_wrapped_label(widget: QtWidget) -> bool:
+    if widget.class_name == "QLabel" and any(
+        property_.name == "wordWrap" and property_.value is True
+        for property_ in widget.properties
+    ):
+        return True
+    return any(_widget_contains_wrapped_label(child) for child in widget.children) or (
+        widget.layout is not None
+        and any(_item_contains_wrapped_label(item) for item in widget.layout.items)
     )
 
 

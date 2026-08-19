@@ -771,6 +771,21 @@ preferred when their topology is unambiguous. Irregular pane shapes and
 irreducible overlap retain a compact or faithful local grid rather than merging
 tracks merely to meet a numeric limit.
 
+Compact-grid acceptance includes an extent test in addition to pairwise
+topology. Center guides collected from unrelated rows can create tiny tracks
+inside a wide or tall control; if the resulting weighted span is less than half
+of either source extent, that compact candidate is rejected and a band layout
+is considered. This is a form-independent test over source geometry and track
+weights.
+
+The extent fallback is conservative around height-for-width text and shared
+alignment constraints. A dialog containing a wrapped label retains the local
+compact candidate, since a nested box rewrite can change the top-level height
+negotiation during `FontChange`. A region also retains the compact candidate
+when three or more controls share a near guide, or two same-class controls have
+left, right, or vertical-center guides within three DLU. These guards preserve
+distant alignment and tolerate ordinary hand-authored coordinate jitter.
+
 The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
 spacers and the height ruler, and retains a zero-height root width ruler. The
 ruler has no mouse-hit area but ensures that the dialog minimum width grows
