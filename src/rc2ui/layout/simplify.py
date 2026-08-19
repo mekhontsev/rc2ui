@@ -17,6 +17,8 @@ from rc2ui.qt.model import (
 
 _MIN_COMPACT_SOURCE_EXTENT_RATIO = 0.5
 _NEAR_ALIGNMENT_TOLERANCE_DLU = 3.0
+_MAX_SIMPLIFIED_STRETCH_ITEMS = 5
+_SLICE_OVERLAP_TOLERANCE_DLU = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +59,14 @@ class _Entry:
     key: str
     item: QtLayoutItem
     rect: _Rect
+
+
+_SeparatorSplit = tuple[
+    _Entry,
+    str,
+    tuple[_Entry, ...],
+    tuple[_Entry, ...],
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -361,10 +371,11 @@ def _separator_region_layout(
             max(1, round(after_bounds.width)),
         )
 
-    if (
-        orientation == "vertical"
-        and _best_separator_split(before, before_bounds) is None
-        and _best_separator_split(after, after_bounds) is None
+    before_split = _best_separator_split(before, before_bounds)
+    after_split = _best_separator_split(after, after_bounds)
+    if orientation == "vertical" and (
+        (before_split is None and after_split is None)
+        or _matching_horizontal_panel_splits(before_split, after_split)
     ):
         return (
             _shared_vertical_panel_grid(
@@ -432,6 +443,27 @@ def _separator_region_layout(
     )
 
 
+def _matching_horizontal_panel_splits(
+    before: _SeparatorSplit | None,
+    after: _SeparatorSplit | None,
+    *,
+    tolerance: float = 3.0,
+) -> bool:
+    """Recognize one cross-panel horizontal boundary drawn as two lines."""
+
+    if before is None or after is None:
+        return False
+    before_separator, before_orientation, _, _ = before
+    after_separator, after_orientation, _, _ = after
+    return (
+        before_orientation == after_orientation == "horizontal"
+        and abs(before_separator.rect.top - after_separator.rect.top)
+        <= tolerance
+        and abs(before_separator.rect.bottom - after_separator.rect.bottom)
+        <= tolerance
+    )
+
+
 def _shared_vertical_panel_grid(
     source: QtLayout,
     separator: _Entry,
@@ -444,69 +476,90 @@ def _shared_vertical_panel_grid(
     names: _ObjectNameAllocator,
     depth: int,
 ) -> QtLayout:
-    """Keep both sides on common coarse rows while isolating their columns."""
+    """Keep both panels on a small set of common semantic rows.
+
+    The faithful grid contains one track for every distinct control edge and
+    another track for every gap.  Reusing those tracks here preserves the
+    picture, but produces the long row-stretch lists that make the form hard
+    to edit in Designer.  Vertical overlap bands are already a stronger unit:
+    controls in one band belong to the same visual row or region.  Consecutive
+    bands are therefore collected into at most a handful of coarse rows; a
+    terminal layout preserves the original geometry inside each row.
+    """
+
+    left_entries = _snap_near_horizontal_edges(left_entries)
+    right_entries = _snap_near_horizontal_edges(right_entries)
 
     entry_side = {
         entry.key: 0 for entry in left_entries
     } | {
         entry.key: 2 for entry in right_entries
     }
-    bands = _vertical_overlap_bands(left_entries + right_entries)
+    bands = _coarse_vertical_band_groups(
+        _vertical_overlap_bands(left_entries + right_entries)
+    )
     items: list[QtLayoutItem] = []
     row_weights: list[int] = []
-    previous_bottom = bounds.top
-    for band_index, band in enumerate(bands):
-        band_top = min(entry.rect.top for entry in band)
-        band_bottom = max(entry.rect.bottom for entry in band)
-        gap = band_top - previous_bottom
-        if gap > 0:
-            row_weights.append(max(1, round(gap)))
-        band_row = len(row_weights)
-        row_weights.append(max(1, round(band_bottom - band_top)))
+    for row, band_group in enumerate(bands):
+        band = tuple(
+            entry for entries in band_group for entry in entries
+        )
+        row_top = (
+            bounds.top
+            if row == 0
+            else min(entry.rect.top for entry in band)
+        )
+        row_bottom = (
+            bounds.bottom
+            if row + 1 == len(bands)
+            else min(
+                entry.rect.top
+                for entries in bands[row + 1]
+                for entry in entries
+            )
+        )
+        row_bottom = max(
+            row_bottom,
+            max(entry.rect.bottom for entry in band),
+        )
         for column, side_bounds in ((0, left_bounds), (2, right_bounds)):
             side_entries = tuple(
-                entry for entry in band if entry_side[entry.key] == column
+                entry
+                for entry in band
+                if entry_side[entry.key] == column
             )
             if not side_entries:
                 continue
-            band_bounds = _Rect(
+            row_bounds = _Rect(
                 side_bounds.left,
-                band_top,
+                row_top,
                 side_bounds.right,
-                band_bottom,
+                row_bottom,
             )
             side_layout = _terminal_region_layout(
                 source,
                 side_entries,
-                band_bounds,
+                row_bounds,
                 names=names,
             )
             side_name = "Left" if column == 0 else "Right"
             side_layout = replace(
                 side_layout,
                 object_name=names.next(
-                    f"{source.object_name}{side_name}Band{band_index + 1}"
+                    f"{source.object_name}{side_name}Region{row + 1}"
                 ),
             )
             items.append(
-                QtLayoutItem(
-                    layout=side_layout,
-                    row=band_row,
-                    column=column,
-                )
+                QtLayoutItem(layout=side_layout, row=row, column=column)
             )
-        previous_bottom = band_bottom
-    trailing_gap = bounds.bottom - previous_bottom
-    if trailing_gap > 0:
-        row_weights.append(max(1, round(trailing_gap)))
-    if not row_weights:
-        row_weights.append(max(1, round(bounds.height)))
+        row_weights.append(max(1, round(row_bottom - row_top)))
+
     items.append(
         replace(
             separator.item,
             row=0,
             column=1,
-            row_span=len(row_weights),
+            row_span=max(1, len(row_weights)),
             column_span=1,
         )
     )
@@ -529,15 +582,103 @@ def _shared_vertical_panel_grid(
     )
 
 
+def _snap_near_horizontal_edges(
+    entries: tuple[_Entry, ...],
+) -> tuple[_Entry, ...]:
+    """Treat small hand-authored edge offsets as shared panel guides."""
+
+    left_values = tuple(entry.rect.left for entry in entries)
+    right_values = tuple(entry.rect.right for entry in entries)
+    left_guides = _clustered_edge_replacements(
+        left_values,
+        locked={
+            value
+            for value in left_values
+            if any(abs(value - right) < 0.5 for right in right_values)
+        },
+    )
+    right_guides = _clustered_edge_replacements(
+        right_values,
+        locked={
+            value
+            for value in right_values
+            if any(abs(value - left) < 0.5 for left in left_values)
+        },
+    )
+    return tuple(
+        replace(
+            entry,
+            rect=replace(
+                entry.rect,
+                left=left_guides[entry.rect.left],
+                right=right_guides[entry.rect.right],
+            ),
+        )
+        for entry in entries
+    )
+
+
+def _clustered_edge_replacements(
+    values: tuple[float, ...],
+    *,
+    locked: set[float],
+) -> dict[float, float]:
+    ordered = sorted(set(values))
+    clusters: list[list[float]] = []
+    for value in ordered:
+        if (
+            not clusters
+            or value - clusters[-1][0] > _NEAR_ALIGNMENT_TOLERANCE_DLU
+        ):
+            clusters.append([value])
+        else:
+            clusters[-1].append(value)
+    replacements: dict[float, float] = {}
+    for cluster in clusters:
+        if any(value in locked for value in cluster):
+            replacements.update((value, value) for value in cluster)
+            continue
+        guide = cluster[len(cluster) // 2]
+        replacements.update((value, guide) for value in cluster)
+    return replacements
+
+
+def _coarse_vertical_band_groups(
+    bands: tuple[tuple[_Entry, ...], ...],
+) -> tuple[tuple[tuple[_Entry, ...], ...], ...]:
+    """Group adjacent bands while retaining the strongest empty cuts."""
+
+    if not bands:
+        return ()
+    groups: list[tuple[tuple[_Entry, ...], ...]] = [bands]
+    while len(groups) < min(len(bands), _MAX_SIMPLIFIED_STRETCH_ITEMS):
+        group_index = max(
+            (index for index, group in enumerate(groups) if len(group) > 1),
+            key=lambda index: len(groups[index]),
+            default=None,
+        )
+        if group_index is None:
+            break
+        group = groups[group_index]
+        split = max(
+            range(1, len(group)),
+            key=lambda index: (
+                min(entry.rect.top for entry in group[index])
+                - max(entry.rect.bottom for entry in group[index - 1]),
+                min(index, len(group) - index),
+            ),
+        )
+        groups[group_index : group_index + 1] = (
+            group[:split],
+            group[split:],
+        )
+    return tuple(groups)
+
+
 def _best_separator_split(
     entries: tuple[_Entry, ...],
     bounds: _Rect,
-) -> tuple[
-    _Entry,
-    str,
-    tuple[_Entry, ...],
-    tuple[_Entry, ...],
-] | None:
+) -> _SeparatorSplit | None:
     candidates: list[
         tuple[
             float,
@@ -699,8 +840,21 @@ def _terminal_region_layout(
     # the vertical scale shared by adjacent panels.  Do not turn a whole side
     # pane into a private VBox/FormLayout: its font-driven row heights could
     # then drift relative to the other side of the separator.
+    row_candidate = _axis_candidate(
+        source,
+        entries,
+        horizontal=True,
+        names=names,
+    )
+    if (
+        row_candidate is not None
+        and len(row_candidate.layout.stretch)
+        > _MAX_SIMPLIFIED_STRETCH_ITEMS
+    ):
+        row_candidate = None
     candidates = (
-        _axis_candidate(source, entries, horizontal=True, names=names),
+        row_candidate,
+        _slicing_candidate(source, entries, names=names),
     )
     faithful_cost = _layout_cost(faithful)
     faithful_friction = _designer_friction(faithful)
@@ -720,9 +874,257 @@ def _terminal_region_layout(
         if (
             _layout_cost(wrapped.layout) < faithful_cost
             or _designer_friction(wrapped.layout) < faithful_friction
+            or (
+                _has_long_serialized_vector(faithful)
+                and not _has_long_serialized_vector(wrapped.layout)
+            )
         ):
             return wrapped.layout
     return faithful
+
+
+def _has_long_serialized_vector(layout: QtLayout) -> bool:
+    if any(
+        len(values) > _MAX_SIMPLIFIED_STRETCH_ITEMS
+        for values in (
+            layout.stretch,
+            layout.row_stretch,
+            layout.minimum_widths,
+            layout.minimum_heights,
+        )
+    ):
+        return True
+    return any(
+        _has_long_serialized_vector(item.layout)
+        for item in layout.items
+        if item.layout is not None
+    ) or any(
+        _has_long_serialized_vector(item.widget.layout)
+        for item in layout.items
+        if item.widget is not None and item.widget.layout is not None
+    )
+
+
+def _slicing_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate | None:
+    """Recursively split a region only along source-empty axis cuts."""
+
+    partition = _best_slice_partition(source, entries)
+    if partition is None:
+        return None
+    horizontal, first, second, gap = partition
+    first_item = _sliced_group_item(
+        source,
+        first,
+        horizontal=horizontal,
+        names=names,
+    )
+    second_item = _sliced_group_item(
+        source,
+        second,
+        horizontal=horizontal,
+        names=names,
+    )
+    if first_item is None or second_item is None:
+        return None
+    class_name = "QHBoxLayout" if horizontal else "QVBoxLayout"
+    orientation = "horizontal" if horizontal else "vertical"
+    middle: tuple[QtLayoutItem, ...] = ()
+    stretches = (
+        max(1, round(_group_extent(first, horizontal=horizontal))),
+        max(1, round(_group_extent(second, horizontal=horizontal))),
+    )
+    if gap > 0:
+        middle = (
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}SliceGap"),
+                    orientation,
+                    size_type="Minimum",
+                    size_hint=max(1, round(gap)),
+                )
+            ),
+        )
+        stretches = (stretches[0], max(1, round(gap)), stretches[1])
+    return _Candidate(
+        QtLayout(
+            class_name,
+            source.object_name,
+            (first_item, *middle, second_item),
+            properties=_portable_properties(source, zero_spacing=True),
+            stretch=stretches,
+        ),
+        {entry.key: entry.rect for entry in entries},
+        "grid-to-slicing-layout",
+    )
+
+
+def _sliced_group_item(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    horizontal: bool,
+    names: _ObjectNameAllocator,
+) -> QtLayoutItem | None:
+    if len(entries) == 1:
+        return _axis_layout_item(
+            source,
+            entries[0],
+            horizontal=horizontal,
+            names=names,
+        )
+    for axis_horizontal in (True, False):
+        candidate = _axis_candidate(
+            source,
+            entries,
+            horizontal=axis_horizontal,
+            names=names,
+        )
+        if (
+            candidate is not None
+            and len(candidate.layout.stretch)
+            <= _MAX_SIMPLIFIED_STRETCH_ITEMS
+        ):
+            return QtLayoutItem(
+                layout=replace(
+                    candidate.layout,
+                    object_name=names.next(f"{source.object_name}Slice"),
+                )
+            )
+    compact = _bounded_compact_candidate(source, entries)
+    if compact is not None:
+        return QtLayoutItem(
+            layout=replace(
+                compact.layout,
+                object_name=names.next(f"{source.object_name}Slice"),
+            )
+        )
+    candidate = _slicing_candidate(source, entries, names=names)
+    if candidate is None:
+        return None
+    return QtLayoutItem(
+        layout=replace(
+            candidate.layout,
+            object_name=names.next(f"{source.object_name}Slice"),
+        )
+    )
+
+
+def _best_slice_partition(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+) -> tuple[bool, tuple[_Entry, ...], tuple[_Entry, ...], float] | None:
+    candidates: list[
+        tuple[int, float, int, bool, tuple[_Entry, ...], tuple[_Entry, ...]]
+    ] = []
+    for horizontal in (True, False):
+        ordered = sorted(
+            entries,
+            key=(
+                (lambda entry: (entry.rect.left, entry.rect.right, entry.key))
+                if horizontal
+                else (
+                    lambda entry: (entry.rect.top, entry.rect.bottom, entry.key)
+                )
+            ),
+        )
+        for index in range(1, len(ordered)):
+            first = tuple(ordered[:index])
+            second = tuple(ordered[index:])
+            first_end = max(
+                entry.rect.right if horizontal else entry.rect.bottom
+                for entry in first
+            )
+            second_start = min(
+                entry.rect.left if horizontal else entry.rect.top
+                for entry in second
+            )
+            gap = second_start - first_end
+            if gap < -_SLICE_OVERLAP_TOLERANCE_DLU:
+                continue
+            direct_groups = sum(
+                not _has_direct_slice_layout(source, group)
+                for group in (first, second)
+            )
+            candidates.append(
+                (
+                    -direct_groups,
+                    max(0.0, gap),
+                    min(len(first), len(second)),
+                    horizontal,
+                    first,
+                    second,
+                )
+            )
+    if not candidates:
+        return None
+    _, gap, _balance, horizontal, first, second = max(
+        candidates,
+        key=lambda candidate: (
+            candidate[0],
+            candidate[1],
+            candidate[2],
+            candidate[3],
+        ),
+    )
+    return horizontal, first, second, gap
+
+
+def _has_direct_slice_layout(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+) -> bool:
+    if len(entries) == 1:
+        return True
+    for horizontal in (True, False):
+        ordered = _axis_order(entries, horizontal=horizontal)
+        if ordered is not None and _axis_serialized_item_count(
+            ordered,
+            horizontal=horizontal,
+        ) <= _MAX_SIMPLIFIED_STRETCH_ITEMS:
+            return True
+    return _bounded_compact_candidate(source, entries) is not None
+
+
+def _bounded_compact_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+) -> _Candidate | None:
+    candidate, rejected_for_extent = _compact_grid_candidate(
+        source,
+        entries,
+        preserve_touching=True,
+    )
+    if candidate is None or rejected_for_extent:
+        return None
+    if _has_long_serialized_vector(candidate.layout):
+        return None
+    if not _preserves_topology(
+        {entry.key: entry.rect for entry in entries},
+        candidate.placements,
+    ):
+        return None
+    return candidate
+
+
+def _group_extent(
+    entries: tuple[_Entry, ...],
+    *,
+    horizontal: bool,
+) -> float:
+    starts = tuple(
+        entry.rect.left if horizontal else entry.rect.top
+        for entry in entries
+    )
+    ends = tuple(
+        entry.rect.right if horizontal else entry.rect.bottom
+        for entry in entries
+    )
+    return max(ends) - min(starts)
 
 
 def _wrap_in_region_margins(
@@ -1159,34 +1561,20 @@ def _axis_candidate(
     horizontal: bool,
     names: _ObjectNameAllocator,
 ) -> _Candidate | None:
-    cross_groups = _overlap_groups(entries, horizontal=not horizontal)
-    if len(cross_groups) != 1:
+    ordered = _axis_order(entries, horizontal=horizontal)
+    if ordered is None:
         return None
-    ordered = sorted(
-        entries,
-        key=(
-            (lambda entry: entry.rect.left)
-            if horizontal
-            else (lambda entry: entry.rect.top)
-        ),
-    )
-    for left, right in zip(ordered, ordered[1:]):
-        left_end = left.rect.right if horizontal else left.rect.bottom
-        right_start = right.rect.left if horizontal else right.rect.top
-        if left_end > right_start:
-            return None
 
     orientation = "horizontal" if horizontal else "vertical"
     items: list[QtLayoutItem] = []
     stretch: list[int] = []
     for index, entry in enumerate(ordered):
         items.append(
-            replace(
-                entry.item,
-                row=None,
-                column=None,
-                row_span=1,
-                column_span=1,
+            _axis_layout_item(
+                source,
+                entry,
+                horizontal=horizontal,
+                names=names,
             )
         )
         stretch.append(
@@ -1239,6 +1627,101 @@ def _axis_candidate(
         placements,
         "grid-to-hbox" if horizontal else "grid-to-vbox",
     )
+
+
+def _axis_order(
+    entries: tuple[_Entry, ...],
+    *,
+    horizontal: bool,
+) -> tuple[_Entry, ...] | None:
+    cross_groups = _overlap_groups(entries, horizontal=not horizontal)
+    if len(cross_groups) != 1:
+        return None
+    ordered = tuple(
+        sorted(
+            entries,
+            key=(
+                (lambda entry: entry.rect.left)
+                if horizontal
+                else (lambda entry: entry.rect.top)
+            ),
+        )
+    )
+    for first, second in zip(ordered, ordered[1:]):
+        first_end = first.rect.right if horizontal else first.rect.bottom
+        second_start = second.rect.left if horizontal else second.rect.top
+        if first_end > second_start:
+            return None
+    return ordered
+
+
+def _axis_serialized_item_count(
+    ordered: tuple[_Entry, ...],
+    *,
+    horizontal: bool,
+) -> int:
+    return len(ordered) + sum(
+        (
+            second.rect.left - first.rect.right
+            if horizontal
+            else second.rect.top - first.rect.bottom
+        )
+        > 0
+        for first, second in zip(ordered, ordered[1:])
+    )
+
+
+def _axis_layout_item(
+    source: QtLayout,
+    entry: _Entry,
+    *,
+    horizontal: bool,
+    names: _ObjectNameAllocator,
+) -> QtLayoutItem:
+    """Keep an initially hidden widget's source slot in a box layout."""
+
+    item = replace(
+        entry.item,
+        row=None,
+        column=None,
+        row_span=1,
+        column_span=1,
+    )
+    widget = item.widget
+    if widget is None or not any(
+        property_.name == "visible" and property_.value is False
+        for property_ in widget.properties
+    ):
+        return item
+
+    orientation = "horizontal" if horizontal else "vertical"
+    extent = max(
+        1,
+        round(entry.rect.width if horizontal else entry.rect.height),
+    )
+    slot = QtLayout(
+        "QGridLayout",
+        names.next(f"{source.object_name}HiddenSlot"),
+        (
+            replace(item, row=0, column=0),
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}HiddenExtent"),
+                    orientation,
+                    size_type="Minimum",
+                    size_hint=extent,
+                ),
+                row=0,
+                column=0,
+            ),
+        ),
+        properties=_portable_properties(source, zero_spacing=True),
+        stretch=(extent,) if horizontal else (),
+        row_stretch=() if horizontal else (extent,),
+        minimum_widths=(extent,) if horizontal else (),
+        minimum_heights=() if horizontal else (extent,),
+    )
+    return QtLayoutItem(layout=slot)
 
 
 def _vertical_bands_candidate(
@@ -1472,6 +1955,8 @@ def _coordinate_subgrid_candidate(
 def _compact_grid_candidate(
     source: QtLayout,
     entries: tuple[_Entry, ...],
+    *,
+    preserve_touching: bool = False,
 ) -> tuple[_Candidate | None, bool]:
     guide_entries = tuple(
         entry
@@ -1491,11 +1976,13 @@ def _compact_grid_candidate(
         row_guides,
         entries,
         horizontal=False,
+        minimum_gap=0 if preserve_touching else 1,
     )
     column_weights = _guide_track_weights(
         column_guides,
         entries,
         horizontal=True,
+        minimum_gap=0 if preserve_touching else 1,
     )
 
     items: list[QtLayoutItem] = []
@@ -1897,6 +2384,7 @@ def _guide_track_weights(
     entries: tuple[_Entry, ...],
     *,
     horizontal: bool,
+    minimum_gap: int = 1,
 ) -> tuple[int, ...]:
     members: list[list[_Entry]] = [[] for _ in guides]
     for entry in entries:
@@ -1952,7 +2440,10 @@ def _guide_track_weights(
                 - guides[index]
                 - (sizes[index] + sizes[index + 1]) / 2
             )
-        result.append(max(1, round(gap)))
+        # The general compact-grid fallback historically keeps a one-DLU
+        # track.  Semantic slicing can opt into a real zero for controls that
+        # deliberately share an edge, such as an edit/up-down pair.
+        result.append(max(minimum_gap, round(gap)))
     return tuple(result)
 
 

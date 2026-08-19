@@ -161,6 +161,44 @@ def separator_panel_dialog():
     )
 
 
+def paired_separator_dialog():
+    """Generic side panels with a shared horizontal section boundary."""
+
+    specs = [
+        ("Static", "Left one", 0, RectDlu(4, 6, 27, 8)),
+        ("Edit", "", 0, RectDlu(34, 3, 51, 14)),
+        ("msctls_updown32", "", 0, RectDlu(85, 3, 10, 14)),
+        ("Static", "Left two", 0, RectDlu(4, 26, 27, 8)),
+        ("Edit", "", 0, RectDlu(34, 23, 51, 14)),
+        ("msctls_updown32", "", 0, RectDlu(85, 23, 10, 14)),
+        ("Static", "Right one", 0, RectDlu(106, 6, 31, 8)),
+        ("Edit", "", 0, RectDlu(140, 3, 58, 14)),
+        ("Static", "Right two", 0, RectDlu(106, 26, 31, 8)),
+        ("Edit", "", 0, RectDlu(140, 23, 58, 14)),
+        ("Static", "", 0x10, RectDlu(2, 44, 96, 1)),
+        ("Static", "", 0x10, RectDlu(103, 44, 99, 1)),
+        ("Static", "Left three", 0, RectDlu(4, 55, 30, 8)),
+        ("Edit", "", 0, RectDlu(37, 52, 48, 14)),
+        ("msctls_updown32", "", 0, RectDlu(85, 52, 10, 14)),
+        ("Static", "Left four", 0, RectDlu(4, 75, 30, 8)),
+        ("Edit", "", 0, RectDlu(37, 72, 48, 14)),
+        ("msctls_updown32", "", 0, RectDlu(85, 72, 10, 14)),
+        ("Static", "Right three", 0, RectDlu(106, 55, 34, 8)),
+        ("Edit", "", 0, RectDlu(143, 52, 55, 14)),
+        ("Static", "Right four", 0, RectDlu(106, 75, 34, 8)),
+        ("Edit", "", 0, RectDlu(143, 72, 55, 14)),
+        ("Static", "", 0x11, RectDlu(100, 0, 1, 94)),
+        ("Static", "", 0x10, RectDlu(0, 93, 203, 1)),
+        ("Button", "Apply", 0, RectDlu(123, 99, 36, 14)),
+        ("Button", "Close", 0, RectDlu(163, 99, 36, 14)),
+    ]
+    return replace(
+        make_dialog(specs),
+        rect=RectDlu(0, 0, 203, 118),
+        caption="Section sample",
+    )
+
+
 def stacked_field_dialog():
     return replace(
         make_dialog(
@@ -628,14 +666,128 @@ class SimplifiedLayoutTests(unittest.TestCase):
             hidden.findtext("./property[@name='visible']/bool"),
             "false",
         )
+        stretch_lengths = [
+            len(layout.get(attribute, "").split(","))
+            for layout in xml.findall(".//layout")
+            for attribute in (
+                "stretch",
+                "columnstretch",
+                "rowstretch",
+                "columnminimumwidth",
+                "rowminimumheight",
+            )
+            if layout.get(attribute)
+        ]
+        self.assertLessEqual(max(stretch_lengths), 5)
+
+    def test_hidden_widget_keeps_its_slot_in_simplified_axis_layout(
+        self,
+    ) -> None:
+        hidden_checkbox = 0x40000000 | 0x00002003
+        faithful = build(
+            make_dialog(
+                [
+                    ("Button", "One", 0, RectDlu(5, 5, 36, 14)),
+                    ("Button", "Two", 0, RectDlu(45, 5, 36, 14)),
+                    (
+                        "Button",
+                        "Optional",
+                        hidden_checkbox,
+                        RectDlu(85, 5, 55, 14),
+                    ),
+                ]
+            )
+        )
+
+        simplified = simplify_form(faithful.root_widget)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+        hidden_slots = [
+            layout
+            for layout in xml.findall(".//layout")
+            if "HiddenSlot" in layout.get("name", "")
+        ]
+
+        self.assertEqual(len(hidden_slots), 1)
+        self.assertIsNotNone(
+            hidden_slots[0].find(".//widget[@class='QCheckBox']")
+        )
+        self.assertIsNotNone(hidden_slots[0].find(".//spacer"))
+
+    def test_paired_panel_separators_keep_one_coarse_shared_grid(
+        self,
+    ) -> None:
+        dialog = paired_separator_dialog()
+        simplified, reference = simplified_case(dialog)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+
+        self.assertIn(
+            "grid-to-separator-panels:1",
+            simplified.transformations,
+        )
+        top = simplified.root_widget.layout.items[0].layout
+        self.assertIsNotNone(top)
+        self.assertEqual(top.class_name, "QGridLayout")
+        self.assertLessEqual(len(top.row_stretch), 5)
+        self.assertEqual(len(top.stretch), 3)
 
         stretch_lengths = [
             len(layout.get(attribute, "").split(","))
             for layout in xml.findall(".//layout")
-            for attribute in ("columnstretch", "rowstretch")
+            for attribute in (
+                "stretch",
+                "columnstretch",
+                "rowstretch",
+                "columnminimumwidth",
+                "rowminimumheight",
+            )
             if layout.get(attribute)
         ]
-        self.assertLessEqual(max(stretch_lengths), 9)
+        self.assertLessEqual(max(stretch_lengths), 5)
+        vertical_lines = [
+            widget
+            for widget in xml.findall(".//widget[@class='QFrame']")
+            if widget.findtext(
+                "./property[@name='frameShape']/enum"
+            ) == "QFrame::VLine"
+        ]
+        self.assertEqual(len(vertical_lines), 1)
+        emitted_names = {
+            widget.get("name") for widget in xml.findall(".//widget")
+        }
+        self.assertTrue(
+            {
+                control.object_name for control in reference.controls
+            }.issubset(emitted_names)
+        )
+
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_paired_panel_separator_layout_passes_qt_geometry_checks(
+        self,
+    ) -> None:
+        simplified, reference = simplified_case(paired_separator_dialog())
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            ui = root / "paired-panels.ui"
+            report = root / "qt-report.json"
+            ui.write_text(emit_ui(simplified.root_widget), encoding="utf-8")
+            result = run_qt_checks(
+                (ui,),
+                report_path=report,
+                required=True,
+                geometry_references={ui: reference},
+            )
+
+        self.assertFalse(
+            [
+                diagnostic
+                for diagnostic in result.diagnostics
+                if diagnostic.severity is Severity.ERROR
+            ]
+        )
 
     def test_nested_group_is_simplified_independently(self) -> None:
         faithful = build(

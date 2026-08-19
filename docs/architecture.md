@@ -680,13 +680,15 @@ create a false pane.
 
 In simplified output, a substantial vertical separator can become the middle
 column of a coarse three-column panel grid. Left and right content is grouped
-into common vertical-overlap bands, preserving cross-pane top/bottom relations
-when fonts grow. A spanning horizontal separator is applied first, producing
-nested top/bottom regions and allowing a footer button row to remain a normal
-horizontal layout. Ordinary controls that genuinely cross a candidate boundary
-reject the split; one- or two-DLU authored overshoot is tolerated. The rewrite
-is also rejected when another topology-safe candidate has lower Designer
-friction.
+into no more than five common vertical regions, preserving cross-pane
+top/bottom relations when fonts grow without serializing every faithful gap as
+a grid row. Consecutive overlap bands are grouped at strong empty cuts. The
+vertical separator stays one widget spanning those rows. A spanning horizontal
+separator is applied first, producing nested top/bottom regions and allowing a
+footer button row to remain a normal horizontal layout. Ordinary controls that
+genuinely cross a candidate boundary reject the split; one- or two-DLU authored
+overshoot is tolerated. The rewrite is also rejected when another topology-safe
+candidate has lower Designer friction.
 
 ### Tracks, anchors, and spans
 
@@ -757,6 +759,18 @@ selected merely because a long line exists: a lower-friction valid form,
 matrix, band, or cleaned-grid candidate wins. This keeps simplified output from
 becoming structurally worse on sparse or unusually shaped panes.
 
+Inside a selected separator panel, a terminal region first tries a short row
+layout and then a recursive guillotine decomposition. A cut is legal only where
+source rectangles leave the axis empty, allowing one DLU of authored overlap
+fuzz. Candidate cuts prefer children that can be expressed directly as a short
+box layout or a compact guide matrix with at most five serialized tracks. This
+preference keeps shared row/column guides inside one matrix instead of turning
+aligned rows into independent boxes.
+Small hand-authored edge offsets are snapped only within the same panel, while
+edges participating in a touching control pair remain locked. Initially hidden
+widgets receive a same-cell extent spacer when moved to a box layout, retaining
+their source slot until runtime code shows them.
+
 For a complex root, vertical-overlap components may become rows of a root
 `QVBoxLayout`. Ordinary rows use box or compact semantic layouts. A fine
 coordinate grid survives only within a genuinely complex local band, so it no
@@ -766,7 +780,9 @@ factors remain proportional to the source DLU intervals; the same is true for
 one-dimensional box layouts. Consequently a genuinely long row or band stack
 may retain a long stretch vector. It is structural data, not redundant
 serialization: removing it freezes gaps during resize, while arbitrary nested
-grouping changes Qt's size-hint negotiation. Compact form and matrix grids are
+grouping changes Qt's size-hint negotiation. Separator-defined panes are the
+exception: their stronger boundaries and source-empty cuts support the bounded
+coarse-region decomposition described above. Compact form and matrix grids are
 preferred when their topology is unambiguous. Irregular pane shapes and
 irreducible overlap retain a compact or faithful local grid rather than merging
 tracks merely to meet a numeric limit.
@@ -1172,7 +1188,9 @@ The test suite covers these architectural properties:
 - group-box containment and crossing rejection;
 - separator-created panes and nested regions;
 - coarse shared rows across simplified separator panels, including overlong
-  native separators and footer regions;
+  native separators, paired horizontal boundaries, and footer regions;
+- five-entry metadata bounds inside separator regions, compact cross-row
+  matrices, touching edit/up-down pairs, and initially hidden layout slots;
 - one-DLU gaps and proportional resize growth;
 - runtime alternatives and z-order evidence;
 - topology-preserving multilingual correction;

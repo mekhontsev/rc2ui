@@ -292,18 +292,25 @@ only unambiguous layout regions with smaller Designer-oriented structures:
 - regular matrices become compact logical grids;
 - long vertical separators create explicit left/right panels; perpendicular
   horizontal separators create nested top/bottom regions, while both sides of
-  a vertical boundary retain common coarse row bands;
+  a vertical boundary retain at most five common coarse row regions;
 - complex dialogs are split into editable vertical bands, with a fine grid
   retained only inside a band whose genuine local overlap requires it;
 - group boxes and other nested containers are simplified independently.
 
-Vertical bands and box layouts keep explicit source-proportional stretch
-factors for both controls and gaps. These vectors can be long: removing or
-arbitrarily grouping their entries changes Qt's resize distribution and can
-collapse rows, freeze whitespace, or reverse source order. Compact semantic
-grids are preferred where they are unambiguous; an irregular or overlapping
-region retains the smallest topology-safe grid rather than meeting an
-artificial track-count limit.
+Inside a separator panel, consecutive visual bands are grouped at effectively
+empty cuts instead of copying every faithful coordinate track; one DLU of
+ordinary authored overlap is tolerated. A terminal region is recursively
+sliced only along such horizontal or vertical cuts. When two rows share guides,
+each slice uses a compact matrix of at most five tracks so aligned edit/spin
+pairs and distant edges remain aligned. The original separator remains one
+spanning widget rather than being duplicated per row.
+
+Elsewhere, vertical bands and box layouts keep explicit source-proportional
+stretch factors for controls and gaps. A genuinely long one-dimensional row or
+an irreducible overlapping region can therefore still have a long vector:
+removing its structural entries would change Qt's resize distribution. The
+five-track bound applies to the new separator-panel regions where the separator
+and empty cuts provide enough evidence for safe grouping.
 
 A compact guide grid is also rejected when its weighted span would give any
 control less than half of the control's source width or height. The affected
@@ -355,6 +362,11 @@ long vertical separator may become the middle column of a coarse panel grid.
 The two sides share horizontal bands, so font growth cannot make corresponding
 left/right rows drift independently. This rewrite is kept only when it improves
 structural editability over the other topology-safe candidates.
+
+An initially hidden control still occupies its source slot in a simplified box
+layout. The slot is represented by a local extent spacer in the same cell, so
+visible neighbours do not jump when the form is first shown and the control can
+still be made visible at runtime.
 
 Grid stretch factors are proportional to source DLU intervals. Minimum track
 sizes preserve the initial proportions before Qt distributes surplus space.
