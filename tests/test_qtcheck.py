@@ -1071,6 +1071,35 @@ class QtCheckTests(unittest.TestCase):
         self.assertEqual(clipping["severity"], "error")
         self.assertIn("nameEdit", clipping["message"])
 
+    def test_font_change_reports_new_horizontal_text_clipping(self) -> None:
+        baseline = _font_snapshot(
+            {
+                "longTitle": ([10, 10, 120, 30], [80, 24], 26, 18),
+            },
+            horizontal={"longTitle": (120, 116)},
+        )
+        scaled = _font_snapshot(
+            {
+                "longTitle": ([10, 10, 180, 48], [160, 40], 44, 34),
+            },
+            horizontal={"longTitle": (180, 196)},
+        )
+
+        diagnostics = analyze_font_change(
+            baseline,
+            scaled,
+            path=Path("sample.ui"),
+            expected_overlaps=set(),
+        )
+
+        [clipping] = [
+            item
+            for item in diagnostics
+            if item["code"] == "qt.font-width-clipped"
+        ]
+        self.assertEqual(clipping["severity"], "error")
+        self.assertIn("longTitle", clipping["message"])
+
     def test_font_order_ignores_unrelated_disjoint_panes(self) -> None:
         baseline = _font_snapshot(
             {
@@ -1781,7 +1810,10 @@ def _font_snapshot(
         str,
         tuple[list[int], list[int], int, int],
     ],
+    *,
+    horizontal: dict[str, tuple[int, int]] | None = None,
 ) -> dict[str, object]:
+    horizontal = horizontal or {}
     return {
         "form_size": [300, 180],
         "widgets": {
@@ -1790,6 +1822,8 @@ def _font_snapshot(
                 "minimum_size_hint": minimum_hint,
                 "contents_height": contents_height,
                 "text_required_height": text_height,
+                "contents_width": horizontal.get(name, (geometry[2], 0))[0],
+                "text_required_width": horizontal.get(name, (0, 0))[1],
                 "parent_name": "sampleDialog",
                 "visible": True,
             }

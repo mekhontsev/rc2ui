@@ -101,10 +101,16 @@ class BatchConversionTests(unittest.TestCase):
             report["forms"][0]["layout_transformations"],
             ["grid-to-hbox:1"],
         )
-        self.assertFalse(
-            simplified_xml.findall(
-                ".//property[@name='rc2uiInternal']"
-            )
+        self.assertEqual(
+            [
+                widget.get("name")
+                for widget in simplified_xml.findall(".//widget")
+                if widget.find(
+                    "./property[@name='rc2uiInternal']"
+                )
+                is not None
+            ],
+            ["rc2uiFontWidthRuler"],
         )
 
     @unittest.skipUnless(

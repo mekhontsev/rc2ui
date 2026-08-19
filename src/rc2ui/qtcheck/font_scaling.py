@@ -49,6 +49,25 @@ def analyze_font_change(
                     path,
                 )
             )
+        before_width_headroom = _horizontal_headroom(before_item)
+        after_width_headroom = _horizontal_headroom(after_item)
+        if (
+            before_width_headroom is not None
+            and after_width_headroom is not None
+            and before_width_headroom >= -_HEADROOM_TOLERANCE_PX
+            and after_width_headroom < -_HEADROOM_TOLERANCE_PX
+        ):
+            diagnostics.append(
+                diagnostic(
+                    "qt.font-width-clipped",
+                    "error",
+                    (
+                        f"widget {name!r} no longer fits its text after "
+                        f"dynamic FontChange ({-after_width_headroom}px short)"
+                    ),
+                    path,
+                )
+            )
 
     for left_index, left_name in enumerate(common_names):
         for right_name in common_names[left_index + 1 :]:
@@ -120,6 +139,20 @@ def _vertical_headroom(item: dict[str, object]) -> int | None:
     ):
         candidates.append(contents_height - text_height)
     return min(candidates) if candidates else None
+
+
+def _horizontal_headroom(item: dict[str, object]) -> int | None:
+    if item.get("font_width_sensitive") is False:
+        return None
+    contents_width = item.get("contents_width")
+    text_width = item.get("text_required_width")
+    if (
+        isinstance(contents_width, int)
+        and isinstance(text_width, int)
+        and text_width > 0
+    ):
+        return contents_width - text_width
+    return None
 
 
 def _broken_order(

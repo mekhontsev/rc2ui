@@ -9,6 +9,7 @@ from rc2ui.qt.model import (
     QtLayout,
     QtLayoutItem,
     QtProperty,
+    QtSizePolicy,
     QtSpacer,
     QtWidget,
 )
@@ -60,6 +61,7 @@ class _Candidate:
     placements: dict[str, _Rect]
     transformation: str
     faithful_fallback: bool = False
+    source_margins_preserved: bool = False
 
 
 class _ObjectNameAllocator:
@@ -90,7 +92,9 @@ class _Simplifier:
             if widget.layout is not None
             else None
         )
-        return replace(widget, children=children, layout=layout)
+        return _designer_responsive_widget(
+            replace(widget, children=children, layout=layout)
+        )
 
     def layout(self, layout: QtLayout) -> QtLayout:
         items = tuple(self._nested_item(item) for item in layout.items)
@@ -130,16 +134,27 @@ class _Simplifier:
                 if len(entries) >= 2
                 else None
             ),
+            (
+                _vertical_bands_candidate(
+                    faithful,
+                    entries,
+                    names=self.names,
+                )
+                if len(entries) >= 3
+                else None
+            ),
         )
         candidates = tuple(
-            _wrap_in_source_margins(
-                faithful,
-                entries,
-                candidate,
-                names=self.names,
+            (
+                candidate
+                if candidate is None or candidate.source_margins_preserved
+                else _wrap_in_source_margins(
+                    faithful,
+                    entries,
+                    candidate,
+                    names=self.names,
+                )
             )
-            if candidate is not None
-            else None
             for candidate in semantic_candidates
         ) + (_clean_faithful_grid(faithful, entries),)
         faithful_cost = _layout_cost(faithful)
@@ -171,7 +186,11 @@ def simplify_form(root_widget: QtWidget) -> SimplificationResult:
     """Create a Designer-oriented form without mutating faithful planning."""
 
     simplifier = _Simplifier(_object_names(root_widget))
-    simplified = simplifier.widget(root_widget)
+    simplified = _retain_root_width_ruler(
+        root_widget,
+        simplifier.widget(root_widget),
+        names=simplifier.names,
+    )
     return SimplificationResult(
         root_widget=simplified,
         editability_score=_editability_score(simplified),
@@ -182,6 +201,107 @@ def simplify_form(root_widget: QtWidget) -> SimplificationResult:
             for name, count in sorted(simplifier.transformations.items())
         ),
     )
+
+
+def _retain_root_width_ruler(
+    faithful: QtWidget,
+    simplified: QtWidget,
+    *,
+    names: _ObjectNameAllocator,
+) -> QtWidget:
+    """Keep a zero-height, font-relative width floor in simplified forms.
+
+    Semantic layouts naturally grow vertically when their font changes.  A
+    top-level dialog does not, however, reliably grow to its new horizontal
+    sizeHint on every Qt style.  The faithful width ruler is therefore kept as
+    a zero-height item.  It cannot cover controls on the Designer canvas, but
+    it makes the dialog minimum width follow FontChange without runtime code.
+    """
+
+    if faithful.layout is None or simplified.layout is None:
+        return simplified
+    ruler = next(
+        (
+            item
+            for item in faithful.layout.items
+            if item.widget is not None
+            and item.widget.object_name.startswith("rc2uiFontWidthRuler")
+        ),
+        None,
+    )
+    if ruler is None:
+        return simplified
+    ruler = replace(
+        ruler,
+        row=None,
+        column=None,
+        row_span=1,
+        column_span=1,
+    )
+    layout = simplified.layout
+    if layout.class_name == "QVBoxLayout":
+        return replace(
+            simplified,
+            layout=replace(layout, items=layout.items + (ruler,)),
+        )
+    if layout.class_name == "QGridLayout":
+        rows, columns = _grid_shape(layout)
+        return replace(
+            simplified,
+            layout=replace(
+                layout,
+                items=layout.items
+                + (
+                    replace(
+                        ruler,
+                        row=0,
+                        column=0,
+                        row_span=rows,
+                        column_span=columns,
+                    ),
+                ),
+            ),
+        )
+    wrapper = QtLayout(
+        "QVBoxLayout",
+        names.next(f"{layout.object_name}SimplifiedRoot"),
+        (QtLayoutItem(layout=layout), ruler),
+        properties=_portable_properties(layout, zero_spacing=True),
+    )
+    return replace(simplified, layout=wrapper)
+
+
+def _designer_responsive_widget(widget: QtWidget) -> QtWidget:
+    """Let text controls publish font-dependent width in simplified forms."""
+
+    if widget.class_name not in {
+        "QCheckBox",
+        "QGroupBox",
+        "QPushButton",
+        "QRadioButton",
+        "QToolButton",
+    }:
+        return widget
+    properties: list[QtProperty] = []
+    changed = False
+    for property_ in widget.properties:
+        if property_.name != "sizePolicy" or not isinstance(
+            property_.value,
+            QtSizePolicy,
+        ):
+            properties.append(property_)
+            continue
+        if property_.value.horizontal == "Minimum":
+            properties.append(property_)
+            continue
+        properties.append(
+            replace(
+                property_,
+                value=replace(property_.value, horizontal="Minimum"),
+            )
+        )
+        changed = True
+    return replace(widget, properties=tuple(properties)) if changed else widget
 
 
 def editability_score(root_widget: QtWidget) -> float:
@@ -437,6 +557,219 @@ def _axis_candidate(
     )
 
 
+def _vertical_bands_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate | None:
+    """Replace a fine global grid with editable horizontal row layouts."""
+
+    bands = _vertical_overlap_bands(entries)
+    if len(bands) < 2 or max(map(len, bands)) < 2:
+        return None
+
+    row_count, _ = _grid_shape(source)
+    row_weights = _weights(
+        source.minimum_heights or source.row_stretch,
+        row_count,
+    )
+    total_height = float(sum(row_weights))
+    items: list[QtLayoutItem] = []
+    stretch: list[int] = []
+    previous_bottom = 0.0
+    placements: dict[str, _Rect] = {}
+    for band_index, band in enumerate(bands):
+        band_top = min(entry.rect.top for entry in band)
+        band_bottom = max(entry.rect.bottom for entry in band)
+        gap = band_top - previous_bottom
+        if gap > 0:
+            items.append(
+                QtLayoutItem(
+                    spacer=QtSpacer(
+                        names.next(
+                            f"{source.object_name}VerticalGap{band_index + 1}"
+                        ),
+                        "vertical",
+                        size_type="Minimum",
+                        size_hint=max(1, round(gap)),
+                    )
+                )
+            )
+            stretch.append(max(1, round(gap)))
+
+        row_candidate = _horizontal_band_candidate(
+            source,
+            band,
+            names=names,
+        )
+        if row_candidate is None:
+            return None
+        items.append(QtLayoutItem(layout=row_candidate.layout))
+        stretch.append(max(1, round(band_bottom - band_top)))
+        for entry in band:
+            placements[entry.key] = entry.rect
+        previous_bottom = band_bottom
+
+    trailing_gap = total_height - previous_bottom
+    if trailing_gap > 0:
+        items.append(
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}VerticalGapEnd"),
+                    "vertical",
+                    size_type="Minimum",
+                    size_hint=max(1, round(trailing_gap)),
+                )
+            )
+        )
+        stretch.append(max(1, round(trailing_gap)))
+
+    return _Candidate(
+        QtLayout(
+            "QVBoxLayout",
+            source.object_name,
+            tuple(items),
+            properties=_portable_properties(source, zero_spacing=True),
+            stretch=tuple(stretch),
+        ),
+        placements,
+        "grid-to-vertical-bands",
+        source_margins_preserved=True,
+    )
+
+
+def _vertical_overlap_bands(
+    entries: tuple[_Entry, ...],
+) -> tuple[tuple[_Entry, ...], ...]:
+    ordered = sorted(
+        entries,
+        key=lambda entry: (entry.rect.top, entry.rect.bottom, entry.key),
+    )
+    bands: list[list[_Entry]] = []
+    current_bottom = float("-inf")
+    for entry in ordered:
+        if not bands or entry.rect.top >= current_bottom:
+            bands.append([entry])
+            current_bottom = entry.rect.bottom
+            continue
+        bands[-1].append(entry)
+        current_bottom = max(current_bottom, entry.rect.bottom)
+    return tuple(
+        tuple(
+            sorted(
+                band,
+                key=lambda entry: (entry.rect.left, entry.rect.right, entry.key),
+            )
+        )
+        for band in bands
+    )
+
+
+def _horizontal_band_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate | None:
+    if len(entries) == 1:
+        [entry] = entries
+        candidate = _Candidate(
+            QtLayout(
+                "QHBoxLayout",
+                source.object_name,
+                (
+                    replace(
+                        entry.item,
+                        row=None,
+                        column=None,
+                        row_span=1,
+                        column_span=1,
+                    ),
+                ),
+                properties=_portable_properties(source, zero_spacing=True),
+                stretch=(max(1, round(entry.rect.width)),),
+            ),
+            {entry.key: _Rect(0, 0, 1, 1)},
+            "grid-band-single",
+        )
+    else:
+        candidate = _axis_candidate(
+            source,
+            entries,
+            horizontal=True,
+            names=names,
+        )
+        if candidate is None:
+            candidate = _compact_grid_candidate(source, entries)
+        if candidate is None or not _preserves_topology(
+            {entry.key: entry.rect for entry in entries},
+            candidate.placements,
+        ):
+            candidate = _coordinate_subgrid_candidate(source, entries)
+        if candidate is None or not _preserves_topology(
+            {entry.key: entry.rect for entry in entries},
+            candidate.placements,
+        ):
+            return None
+    return _wrap_in_horizontal_source_margins(
+        source,
+        entries,
+        candidate,
+        names=names,
+    )
+
+
+def _coordinate_subgrid_candidate(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+) -> _Candidate:
+    """Keep exact topology inside one complex band, not the whole form."""
+
+    horizontal_edges = sorted(
+        {edge for entry in entries for edge in (entry.rect.left, entry.rect.right)}
+    )
+    vertical_edges = sorted(
+        {edge for entry in entries for edge in (entry.rect.top, entry.rect.bottom)}
+    )
+    column_for = {edge: index for index, edge in enumerate(horizontal_edges)}
+    row_for = {edge: index for index, edge in enumerate(vertical_edges)}
+    items = tuple(
+        replace(
+            entry.item,
+            row=row_for[entry.rect.top],
+            column=column_for[entry.rect.left],
+            row_span=row_for[entry.rect.bottom] - row_for[entry.rect.top],
+            column_span=(
+                column_for[entry.rect.right] - column_for[entry.rect.left]
+            ),
+        )
+        for entry in entries
+    )
+    columns = tuple(
+        max(1, round(right - left))
+        for left, right in zip(horizontal_edges, horizontal_edges[1:])
+    )
+    rows = tuple(
+        max(1, round(bottom - top))
+        for top, bottom in zip(vertical_edges, vertical_edges[1:])
+    )
+    return _Candidate(
+        QtLayout(
+            "QGridLayout",
+            source.object_name,
+            items,
+            properties=_portable_properties(source, zero_spacing=True),
+            stretch=columns,
+            row_stretch=rows,
+            minimum_widths=columns,
+            minimum_heights=rows,
+        ),
+        {entry.key: entry.rect for entry in entries},
+        "grid-band-faithful",
+    )
+
+
 def _compact_grid_candidate(
     source: QtLayout,
     entries: tuple[_Entry, ...],
@@ -575,17 +908,65 @@ def _wrap_in_source_margins(
     return replace(candidate, layout=wrapper)
 
 
+def _wrap_in_horizontal_source_margins(
+    source: QtLayout,
+    entries: tuple[_Entry, ...],
+    candidate: _Candidate,
+    *,
+    names: _ObjectNameAllocator,
+) -> _Candidate:
+    _, column_count = _grid_shape(source)
+    column_weights = _weights(
+        source.minimum_widths or source.stretch,
+        column_count,
+    )
+    content_left = min(entry.rect.left for entry in entries)
+    content_right = max(entry.rect.right for entry in entries)
+    horizontal = _three_zone_weights(
+        content_left,
+        content_right,
+        float(sum(column_weights)),
+    )
+    inner = replace(
+        candidate.layout,
+        object_name=names.next(f"{source.object_name}BandContent"),
+    )
+    wrapper = QtLayout(
+        "QGridLayout",
+        names.next(f"{source.object_name}Band"),
+        (
+            QtLayoutItem(layout=inner, row=0, column=1),
+            QtLayoutItem(
+                spacer=QtSpacer(
+                    names.next(f"{source.object_name}BandExtentMarker"),
+                    "horizontal",
+                    size_type="Minimum",
+                    size_hint=0,
+                ),
+                row=0,
+                column=2,
+            ),
+        ),
+        properties=_zero_spacing_properties(source.properties),
+        stretch=horizontal,
+        minimum_widths=horizontal,
+    )
+    return replace(candidate, layout=wrapper)
+
+
 def _clean_faithful_grid(
     source: QtLayout,
     entries: tuple[_Entry, ...],
 ) -> _Candidate:
+    """Retain exact tracks without Designer-blocking technical overlays."""
+
     return _Candidate(
         replace(
             source,
             items=tuple(
                 item
                 for item in source.items
-                if not _is_trailing_track_spacer(item)
+                if not _is_technical_item(item)
             ),
         ),
         {entry.key: entry.rect for entry in entries},
@@ -868,12 +1249,6 @@ def _is_technical_item(item: QtLayoutItem) -> bool:
     )
 
 
-def _is_trailing_track_spacer(item: QtLayoutItem) -> bool:
-    return item.spacer is not None and item.spacer.object_name.startswith(
-        ("trailingHorizontalSpacer", "trailingVerticalSpacer")
-    )
-
-
 def _grid_shape(layout: QtLayout) -> tuple[int, int]:
     row_count = max(
         ((item.row or 0) + item.row_span for item in layout.items),
@@ -923,20 +1298,54 @@ def _layout_cost(layout: QtLayout) -> int:
 
 def _editability_score(root_widget: QtWidget) -> float:
     widget_count = _widget_count(root_widget)
-    layout_cost = _layout_cost(root_widget.layout) if root_widget.layout else 0
+    layout_cost = (
+        _designer_friction(root_widget.layout) if root_widget.layout else 0
+    )
     denominator = max(1, widget_count * 8 + layout_cost)
     return round(widget_count * 8 / denominator, 4)
+
+
+def _designer_friction(layout: QtLayout) -> int:
+    """Estimate mouse-editing difficulty, not serialization complexity."""
+
+    cost = 1
+    if layout.class_name == "QGridLayout":
+        rows, columns = _grid_shape(layout)
+        if rows > 3 and columns > 3:
+            # A fine two-dimensional coordinate mesh is the structure that
+            # makes dropping a control in Designer impractical.  Small 1x3
+            # margin wrappers and compact semantic grids are intentionally
+            # cheap even when there are many of them.
+            cost += (rows - 1) * (columns - 1)
+        else:
+            cost += max(0, rows * columns - len(layout.items) * 2)
+    elif layout.class_name == "QFormLayout":
+        cost += 1
+    for item in layout.items:
+        if _is_technical_item(item):
+            cost += 4
+        if item.widget is not None and item.widget.layout is not None:
+            cost += _designer_friction(item.widget.layout)
+        elif item.layout is not None:
+            cost += _designer_friction(item.layout)
+    return cost
 
 
 def _widget_count(widget: QtWidget) -> int:
     result = 0 if _is_internal_widget(widget) else 1
     result += sum(_widget_count(child) for child in widget.children)
     if widget.layout is not None:
-        result += sum(
-            _widget_count(item.widget)
-            for item in widget.layout.items
-            if item.widget is not None
-        )
+        result += _layout_widget_count(widget.layout)
+    return result
+
+
+def _layout_widget_count(layout: QtLayout) -> int:
+    result = 0
+    for item in layout.items:
+        if item.widget is not None:
+            result += _widget_count(item.widget)
+        elif item.layout is not None:
+            result += _layout_widget_count(item.layout)
     return result
 
 

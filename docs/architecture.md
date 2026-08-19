@@ -723,7 +723,8 @@ generality:
 1. label/editor form rows;
 2. one-dimensional box layouts;
 3. a compact coordinate matrix;
-4. a cleaned faithful grid.
+4. editable vertical bands for a complex container;
+5. a cleaned faithful grid.
 
 A form row with a positive source gap uses a three-column grid rather than a
 `QFormLayout`, because the latter's inter-column spacing is style-controlled
@@ -737,12 +738,20 @@ faithful region. Rejection is local: the current container keeps a cleaned
 faithful grid while already accepted descendants and unrelated containers are
 unchanged.
 
-The simplified model keeps `QLayout::SetMinimumSize` but removes full-span
-technical rulers and floor spacers from rewritten regions. Natural widget size
-hints then provide font-dependent minimums, while explicit proportional tracks
-preserve source whitespace during resize. Optional Qt validation loads the
-final XML, resizes it, changes its font in place, and checks the same observable
-topology used for faithful output.
+For a complex root, strict vertical-overlap components become rows of a root
+`QVBoxLayout`. Ordinary rows use box or compact semantic layouts. A fine
+coordinate grid survives only within a genuinely complex local band, so it no
+longer prevents dropping a new widget between the dialog's major rows in
+Designer.
+
+The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
+spacers and the height ruler, and retains a zero-height root width ruler. The
+ruler has no mouse-hit area but ensures that the dialog minimum width grows
+with `FontChange`; natural widget hints grow it vertically. Explicit
+proportional tracks preserve source whitespace during resize. Optional Qt
+validation loads the final XML, resizes it, changes its font in place, and
+checks the same observable topology used for faithful output, including newly
+introduced horizontal or vertical text clipping.
 
 The simplifier returns transformation counts, local-fallback counts, and a
 normalized structural editability score. These values are serialized with each
@@ -775,7 +784,8 @@ container ownership.
 DLU geometry is font-relative. Pixel-only grid minimums would preserve the
 initial screenshot but fail after an application-wide font change.
 
-rc2ui restores the relationship without application runtime code:
+The faithful reference mode restores the relationship without application
+runtime code:
 
 - nested layouts use `QLayout::SetMinimumSize`;
 - the root grid includes source-size floor spacers;
@@ -786,9 +796,15 @@ rc2ui restores the relationship without application runtime code:
 - their size is distributed through the same coordinate tracks as controls and
   gaps.
 
+The simplified mode preserves the horizontal ruler at zero height and relies
+on semantic layout size hints vertically, avoiding a full-form overlay in
+Designer while retaining the font-change invariant.
+
 The runtime validator changes the already loaded form's font rather than
-reloading the UI. It then verifies text height, order, anchors, and containment
-again.
+reloading the UI. It then verifies text width and height, order, anchors, and
+containment again. `faithful` remains the reference mode; simplification is
+accepted only as a post-processing convenience and does not redefine the
+conversion's geometry evidence.
 
 ## Qt model and emission
 
@@ -873,7 +889,7 @@ worker records root-relative and local geometry for nested widgets and checks:
 - root layout and expected object creation;
 - label buddy targets;
 - zero-size controls and bounds;
-- minimum-size-hint and text-height clipping;
+- minimum-size-hint and horizontal or vertical text clipping;
 - serialized Designer geometry smaller than the activated layout hint;
 - unexpected overlap;
 - expansion on each declared expanding axis;
@@ -1019,6 +1035,7 @@ qt.clipped-text
 qt.unexpected-overlap
 qt.source-gap-affinity-changed
 qt.font-height-clipped
+qt.font-width-clipped
 qt.font-order-changed
 ```
 
@@ -1116,7 +1133,8 @@ The test suite covers these architectural properties:
 - runtime alternatives and z-order evidence;
 - topology-preserving multilingual correction;
 - pre-emission rejection of collapsed rows or reversed order;
-- dynamic font changes without height clipping or order changes;
+- dynamic font changes without horizontal or vertical clipping or order
+  changes;
 - source-geometry post-validation at multiple runtime sizes;
 - exact and regex naming-rule precedence and ambiguity;
 - project widget promotion, typed properties, exact class-and-ID bindings and

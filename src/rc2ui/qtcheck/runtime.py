@@ -587,6 +587,7 @@ class RuntimeInspector:
             for widget in widgets:
                 item = widgets_snapshot[widget.objectName()]
                 text_required_height = self._text_required_height(widget)
+                text_required_width = self._text_required_width(widget)
                 item["font_height_sensitive"] = (
                     text_required_height is not None
                     or isinstance(
@@ -598,9 +599,12 @@ class RuntimeInspector:
                         ),
                     )
                 )
+                item["font_width_sensitive"] = text_required_width is not None
                 item["minimum_size_hint"] = _size(widget.minimumSizeHint())
                 item["contents_height"] = widget.contentsRect().height()
                 item["text_required_height"] = text_required_height
+                item["contents_width"] = self._text_available_width(widget)
+                item["text_required_width"] = text_required_width
         return {
             "form_size": _size(root.size()),
             "baseline": baseline,
@@ -630,6 +634,51 @@ class RuntimeInspector:
         if isinstance(widget, self.QtWidgets.QGroupBox):
             return widget.fontMetrics().height()
         return None
+
+    def _text_required_width(self, widget: Any) -> int | None:
+        text = self._widget_text(widget)
+        if not text:
+            return None
+        if isinstance(widget, self.QtWidgets.QLabel):
+            if widget.wordWrap():
+                return None
+            return widget.fontMetrics().boundingRect(
+                0,
+                0,
+                100000,
+                100000,
+                self.QtCore.Qt.TextFlag.TextShowMnemonic,
+                text,
+            ).width()
+        if isinstance(widget, self.QtWidgets.QAbstractButton):
+            return widget.minimumSizeHint().width()
+        if isinstance(widget, self.QtWidgets.QGroupBox):
+            # QGroupBox.sizeHint() is commonly governed by its child layout
+            # and can omit a growing title.  The frame/title clearance is
+            # deliberately small; the validator is looking for clipping, not
+            # enforcing a particular style's preferred padding.
+            return (
+                widget.fontMetrics()
+                .boundingRect(
+                    0,
+                    0,
+                    100000,
+                    100000,
+                    self.QtCore.Qt.TextFlag.TextShowMnemonic,
+                    text,
+                )
+                .width()
+                + 16
+            )
+        return None
+
+    def _text_available_width(self, widget: Any) -> int:
+        if isinstance(
+            widget,
+            (self.QtWidgets.QAbstractButton, self.QtWidgets.QGroupBox),
+        ):
+            return widget.width()
+        return widget.contentsRect().width()
 
     def _root_geometry(self, widget: Any, root: Any) -> list[int]:
         origin = widget.mapTo(root, self.QtCore.QPoint(0, 0))

@@ -9,13 +9,13 @@ from pathlib import Path
 
 from rc2ui.domain.diagnostics import Severity
 from rc2ui.domain.geometry import RectDlu
-from rc2ui.layout.simplify import simplify_form
+from rc2ui.layout.simplify import editability_score, simplify_form
 from rc2ui.qt.emitter import emit_ui
 from rc2ui.qt.model import QtWidget
 from rc2ui.qtcheck.discovery import discover_qt_binding
 from rc2ui.qtcheck.runner import run_qt_checks
 from rc2ui.validation.ui_xml import validate_ui_xml
-from tests.test_layout_and_emitter import build, make_dialog
+from tests.test_layout_and_emitter import build, dense_multiline_dialog, make_dialog
 
 
 def content_layout(widget):
@@ -54,14 +54,13 @@ class SimplifiedLayoutTests(unittest.TestCase):
             len(xml.findall("./widget/layout/item/layout/item")),
             6,
         )
-        self.assertFalse(
-            any(
-                name.startswith("rc2uiFont")
-                for name in (
-                    widget.get("name", "")
-                    for widget in xml.findall(".//widget")
-                )
-            )
+        self.assertEqual(
+            [
+                widget.get("name", "")
+                for widget in xml.findall(".//widget")
+                if widget.get("name", "").startswith("rc2uiFont")
+            ],
+            ["rc2uiFontWidthRuler"],
         )
         spacer_names = [
             spacer.get("name", "") for spacer in xml.findall(".//spacer")
@@ -181,6 +180,45 @@ class SimplifiedLayoutTests(unittest.TestCase):
             simplified.root_widget.layout.stretch,
             faithful.root_widget.layout.stretch,
         )
+        text = emit_ui(simplified.root_widget)
+        self.assertIn("rc2uiFontWidthRuler", text)
+        self.assertNotIn("rc2uiFontHeightRuler", text)
+        self.assertNotIn("fontMinimum", text)
+        self.assertNotIn("trailingHorizontalSpacer", text)
+        self.assertNotIn("trailingVerticalSpacer", text)
+
+    def test_complex_form_root_becomes_editable_vertical_bands(self) -> None:
+        faithful = build(dense_multiline_dialog())
+
+        simplified = simplify_form(faithful.root_widget)
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+
+        self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        self.assertIn("grid-to-vertical-bands:1", simplified.transformations)
+        self.assertFalse(
+            any(
+                attribute in item.attrib
+                for item in xml.findall("./widget/layout/item")
+                for attribute in ("row", "column", "rowspan", "colspan")
+            )
+        )
+        internal_widgets = [
+            widget.get("name")
+            for widget in xml.findall(".//widget")
+            if widget.find("./property[@name='rc2uiInternal']") is not None
+        ]
+        self.assertEqual(internal_widgets, ["rc2uiFontWidthRuler"])
+        self.assertGreater(
+            simplified.editability_score,
+            editability_score(faithful.root_widget),
+        )
+        checkbox_policy = xml.find(
+            ".//widget[@name="
+            "'preserveItemsDuringProcessingOperationCheckBox']"
+            "/property[@name='sizePolicy']/sizepolicy"
+        )
+        self.assertIsNotNone(checkbox_policy)
+        self.assertEqual(checkbox_policy.get("hsizetype"), "Minimum")
 
     def test_nested_group_is_simplified_independently(self) -> None:
         faithful = build(
@@ -282,6 +320,41 @@ class SimplifiedLayoutTests(unittest.TestCase):
         self.assertGreater(
             font_test["form_size_after"][1],
             font_test["form_size_before"][1],
+        )
+
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_dense_simplified_form_grows_with_dynamic_font(self) -> None:
+        faithful = build(dense_multiline_dialog())
+        simplified = simplify_form(faithful.root_widget)
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            ui = root / "dense.ui"
+            report = root / "qt-report.json"
+            ui.write_text(emit_ui(simplified.root_widget), encoding="utf-8")
+            result = run_qt_checks(
+                (ui,),
+                report_path=report,
+                required=True,
+            )
+            payload = json.loads(report.read_text(encoding="utf-8"))
+
+        font_test = payload["forms"][0]["font_test"]
+        self.assertTrue(result.available)
+        self.assertTrue(font_test["passed"])
+        self.assertGreater(
+            font_test["form_size_after"][0],
+            font_test["form_size_before"][0] * 1.75,
+        )
+        self.assertFalse(
+            any(
+                diagnostic["code"]
+                in {"qt.font-height-clipped", "qt.font-width-clipped"}
+                for diagnostic in payload["forms"][0]["diagnostics"]
+            )
         )
 
 

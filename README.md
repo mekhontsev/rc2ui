@@ -276,10 +276,12 @@ The central invariants are:
 
 ### Faithful and simplified layouts
 
-`faithful` is the default layout mode. It preserves the full coordinate-track
-model, including small gaps, distant alignment guides, spans, separators, and
-layered controls. Use it when matching the original dialog as closely as
-possible is more important than manually editing the generated layout tree.
+`faithful` is the default and reference layout mode. It preserves the full
+coordinate-track model, including small gaps, distant alignment guides, spans,
+separators, and layered controls. Its primary invariant is that a form remains
+usable after an application-wide dynamic font change. Resize behavior is
+secondary, and convenient manual editing is not allowed to weaken the font
+invariant or the reference geometry.
 
 `simplified` keeps the faithful analysis as its source of truth, then replaces
 only unambiguous layout regions with smaller Designer-oriented structures:
@@ -288,6 +290,8 @@ only unambiguous layout regions with smaller Designer-oriented structures:
   a compact three-column `QGridLayout` when the source has a scalable gap;
 - single rows and columns become `QHBoxLayout` and `QVBoxLayout`;
 - regular matrices become compact logical grids;
+- complex dialogs are split into editable vertical bands, with a fine grid
+  retained only inside a band whose genuine local overlap requires it;
 - group boxes and other nested containers are simplified independently.
 
 Every candidate must preserve pairwise left/right and above/below order,
@@ -364,10 +368,12 @@ full-size floor spacers, and zero-thickness font-relative `QLabel` rulers in the
 root coordinate grid. Their `sizeHint` changes on Qt `FontChange`, allowing the
 grid, text cells, and gaps to grow without generated Python runtime code.
 
-Those full coordinate rulers are part of `faithful` mode. Simplified regions
-instead rely on the natural, font-dependent size hints of their semantic Qt
-layouts and retain `QLayout::SetMinimumSize`; this keeps the Designer tree
-small while allowing controls and the form minimum to grow after `FontChange`.
+The full coordinate rulers are part of `faithful` mode. `simplified` relies on
+the natural, font-dependent height hints of semantic Qt layouts and retains one
+zero-height width ruler at the root. The ruler cannot cover controls on the
+Designer canvas, but makes the dialog minimum width follow `FontChange` on Qt
+styles that do not propagate a new top-level horizontal size hint by
+themselves. `QLayout::SetMinimumSize` remains active in both modes.
 
 ## Optional Qt 6 validation
 
@@ -408,7 +414,7 @@ font dynamically, and checks:
 - generator-selected anchors and group parents;
 - local same-row gap affinity, so a caption cannot attach to the wrong field;
 - separator sides and runtime-alternative exclusions;
-- text height and ordering after a twofold font increase;
+- text width, text height, and ordering after a twofold font increase;
 - normalized spatial drift and size collapse against report geometry.
 
 Results are written to `rc2ui-qt-report.json`. Metrics include runtime geometry,
