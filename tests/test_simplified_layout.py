@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import json
 import tempfile
+import tomllib
 import unittest
 import xml.etree.ElementTree as ET
 from dataclasses import replace
 from pathlib import Path
 
+from rc2ui.analysis.multilingual import fuse_dialog_languages
 from rc2ui.domain.diagnostics import Severity
 from rc2ui.domain.geometry import RectDlu
 from rc2ui.layout.infer import LayoutBuilder
@@ -21,6 +23,9 @@ from rc2ui.qtcheck.model import (
     FormGeometryReference,
 )
 from rc2ui.qtcheck.runner import run_qt_checks
+from rc2ui.semantics.config import SemanticMap
+from rc2ui.semantics.engine import SemanticEngine
+from rc2ui.semantics.transform import apply_semantic_mapping
 from rc2ui.validation.ui_xml import validate_ui_xml
 from tests.test_layout_and_emitter import build, dense_multiline_dialog, make_dialog
 
@@ -74,6 +79,34 @@ def simplified_case(dialog):
         ),
     )
     return simplified, reference
+
+
+def simplified_replaced_spinbox_case(dialog):
+    multilingual = fuse_dialog_languages((dialog,), dialog.key.language)
+    mapped = tuple(ControlMapper().map(control) for control in dialog.controls)
+    semantic_map = SemanticMap.from_table(
+        tomllib.loads(
+            "[[rules]]\n"
+            'name = "numeric-fields"\n'
+            'kind = "edit-updown"\n'
+            'action = "replace"\n'
+            'result = "QDoubleSpinBox"\n'
+            "runtime_configured = true\n"
+        ),
+        path=Path("rc2ui.toml"),
+    )
+    plan = SemanticEngine(semantic_map).analyze(multilingual, mapped)
+    naming_mapped = apply_semantic_mapping(mapped, plan, for_naming=True)
+    naming = NameResolver().resolve(multilingual.dialog, naming_mapped)
+    layout_mapped = apply_semantic_mapping(mapped, plan)
+    faithful = LayoutBuilder().build(
+        multilingual.layout_dialog,
+        layout_mapped,
+        naming,
+        multilingual.layout_hints,
+        plan,
+    )
+    return simplify_form(faithful.root_widget)
 
 
 def separator_panel_dialog():
@@ -777,6 +810,42 @@ class SimplifiedLayoutTests(unittest.TestCase):
                 for diagnostic in payload["forms"][0]["diagnostics"]
                 if diagnostic["code"] in rejected
             ]
+        )
+
+    @unittest.skipUnless(
+        discover_qt_binding().available,
+        "Qt 6 binding is not installed",
+    )
+    def test_replaced_spinbox_and_checkbox_get_font_safe_vbox(self) -> None:
+        simplified = simplified_replaced_spinbox_case(stacked_field_dialog())
+        xml = ET.fromstring(emit_ui(simplified.root_widget))
+        spin = xml.find(".//widget[@class='QDoubleSpinBox']")
+        self.assertIsNotNone(spin)
+        spin_name = spin.get("name")
+        self.assertIsNotNone(
+            xml.find(
+                ".//layout[@class='QVBoxLayout']/item/"
+                "widget[@class='QDoubleSpinBox']"
+            )
+        )
+
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            ui = root / "replaced-spinbox.ui"
+            report = root / "qt-report.json"
+            ui.write_text(emit_ui(simplified.root_widget), encoding="utf-8")
+            run_qt_checks((ui,), report_path=report, required=True)
+            payload = json.loads(report.read_text(encoding="utf-8"))
+
+        form = payload["forms"][0]
+        metrics = form["metrics"][spin_name]
+        self.assertGreaterEqual(
+            metrics["size"][1],
+            metrics["minimum_size_hint"][1],
+        )
+        self.assertNotIn(
+            "qt.font-height-clipped",
+            {diagnostic["code"] for diagnostic in form["diagnostics"]},
         )
 
     @unittest.skipUnless(
