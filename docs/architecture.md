@@ -738,11 +738,14 @@ faithful region. Rejection is local: the current container keeps a cleaned
 faithful grid while already accepted descendants and unrelated containers are
 unchanged.
 
-For a complex root, strict vertical-overlap components become rows of a root
+For a complex root, vertical-overlap components become rows of a root
 `QVBoxLayout`. Ordinary rows use box or compact semantic layouts. A fine
 coordinate grid survives only within a genuinely complex local band, so it no
 longer prevents dropping a new widget between the dialog's major rows in
-Designer.
+Designer. A one-DLU vertical boundary overlap is normalized as source jitter.
+Root gaps are explicit Minimum spacers; the `QVBoxLayout` deliberately has no
+per-item stretch vector, avoiding a long `layoutStretch` property in Designer.
+Only short horizontal vectors that preserve a real row proportion remain.
 
 The simplified model keeps `QLayout::SetMinimumSize`, removes full-span floor
 spacers and the height ruler, and retains a zero-height root width ruler. The

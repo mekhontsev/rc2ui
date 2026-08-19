@@ -15,6 +15,9 @@ from rc2ui.qt.model import (
 )
 
 
+_ROW_BOUNDARY_TOLERANCE = 1.0
+
+
 @dataclass(frozen=True, slots=True)
 class SimplificationResult:
     root_widget: QtWidget
@@ -576,7 +579,6 @@ def _vertical_bands_candidate(
     )
     total_height = float(sum(row_weights))
     items: list[QtLayoutItem] = []
-    stretch: list[int] = []
     previous_bottom = 0.0
     placements: dict[str, _Rect] = {}
     for band_index, band in enumerate(bands):
@@ -596,8 +598,6 @@ def _vertical_bands_candidate(
                     )
                 )
             )
-            stretch.append(max(1, round(gap)))
-
         row_candidate = _horizontal_band_candidate(
             source,
             band,
@@ -606,7 +606,6 @@ def _vertical_bands_candidate(
         if row_candidate is None:
             return None
         items.append(QtLayoutItem(layout=row_candidate.layout))
-        stretch.append(max(1, round(band_bottom - band_top)))
         for entry in band:
             placements[entry.key] = entry.rect
         previous_bottom = band_bottom
@@ -623,15 +622,12 @@ def _vertical_bands_candidate(
                 )
             )
         )
-        stretch.append(max(1, round(trailing_gap)))
-
     return _Candidate(
         QtLayout(
             "QVBoxLayout",
             source.object_name,
             tuple(items),
             properties=_portable_properties(source, zero_spacing=True),
-            stretch=tuple(stretch),
         ),
         placements,
         "grid-to-vertical-bands",
@@ -649,7 +645,11 @@ def _vertical_overlap_bands(
     bands: list[list[_Entry]] = []
     current_bottom = float("-inf")
     for entry in ordered:
-        if not bands or entry.rect.top >= current_bottom:
+        if (
+            not bands
+            or entry.rect.top
+            >= current_bottom - _ROW_BOUNDARY_TOLERANCE
+        ):
             bands.append([entry])
             current_bottom = entry.rect.bottom
             continue

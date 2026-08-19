@@ -194,6 +194,7 @@ class SimplifiedLayoutTests(unittest.TestCase):
         xml = ET.fromstring(emit_ui(simplified.root_widget))
 
         self.assertEqual(simplified.root_widget.layout.class_name, "QVBoxLayout")
+        self.assertEqual(simplified.root_widget.layout.stretch, ())
         self.assertIn("grid-to-vertical-bands:1", simplified.transformations)
         self.assertFalse(
             any(
@@ -208,6 +209,29 @@ class SimplifiedLayoutTests(unittest.TestCase):
             if widget.find("./property[@name='rc2uiInternal']") is not None
         ]
         self.assertEqual(internal_widgets, ["rc2uiFontWidthRuler"])
+        track_attributes = {
+            "stretch",
+            "columnstretch",
+            "rowstretch",
+            "columnminimumwidth",
+            "rowminimumheight",
+        }
+        self.assertLessEqual(
+            max(
+                len(value.split(","))
+                for layout in xml.findall(".//layout")
+                for name, value in layout.attrib.items()
+                if name in track_attributes
+            ),
+            5,
+        )
+        self.assertLessEqual(
+            max(
+                len(layout.get("columnstretch", "").split(","))
+                for layout in xml.findall(".//layout[@class='QGridLayout']")
+            ),
+            4,
+        )
         self.assertGreater(
             simplified.editability_score,
             editability_score(faithful.root_widget),

@@ -294,6 +294,12 @@ only unambiguous layout regions with smaller Designer-oriented structures:
   retained only inside a band whose genuine local overlap requires it;
 - group boxes and other nested containers are simplified independently.
 
+Vertical bands use explicit gap spacers instead of serializing one root
+`layoutStretch` value for every source row and gap. A one-DLU overlap at a row
+boundary is treated as coordinate noise, preventing an otherwise ordinary pair
+of rows from becoming a large local coordinate grid. Short per-row stretch
+lists may remain where they express a real horizontal proportion.
+
 Every candidate must preserve pairwise left/right and above/below order,
 overlap, and source-proven shared boundaries. Outer margins and meaningful gaps
 remain explicit, proportionally stretched regions. If a candidate changes
