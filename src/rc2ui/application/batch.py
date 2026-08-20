@@ -21,6 +21,7 @@ from rc2ui.application.models import (
     FormArtifact,
     LanguageAlignmentArtifact,
     LayoutEvidenceArtifact,
+    LayoutPolicyArtifact,
     RelationEvidenceArtifact,
 )
 from rc2ui.application.output_names import (
@@ -31,8 +32,10 @@ from rc2ui.domain.diagnostics import Diagnostic, Severity
 from rc2ui.domain.dialog import Dialog
 from rc2ui.domain.geometry import RectDlu
 from rc2ui.domain.resource_id import ResourceId
+from rc2ui.layout.gap_growth import apply_gap_growth
 from rc2ui.layout.infer import LayoutBuilder
 from rc2ui.layout.mode import LayoutMode
+from rc2ui.layout.policy import LayoutPolicy
 from rc2ui.layout.simplify import editability_score, simplify_form
 from rc2ui.mapping.controls import ControlMapper
 from rc2ui.mapping.overrides import ControlMap
@@ -169,10 +172,32 @@ class BatchConverter:
                     continue
                 diagnostics.extend(multilingual.diagnostics)
 
+                try:
+                    layout_policy = request.layout_policies.resolve(
+                        _layout_policy_candidates(
+                            dialog_input.dialog_id,
+                            multilingual.dialog.key.resource_id,
+                        ),
+                        mode=request.layout_mode,
+                    )
+                except ValueError as error:
+                    diagnostics.append(
+                        Diagnostic(
+                            code="layout-policy.ambiguous",
+                            severity=Severity.ERROR,
+                            message=str(error),
+                            location=(
+                                f"{dialog_input.source}:"
+                                f"{resource_id.display_name}"
+                            ),
+                        )
+                    )
+                    continue
+
                 artifact = self._convert_dialog(
                     multilingual,
                     dialog_input.dialog_id,
-                    request.layout_mode,
+                    layout_policy,
                     request.ui_comments,
                     naming_map,
                     diagnostics,
@@ -263,7 +288,10 @@ class BatchConverter:
                     )
                 )
 
-        if request.layout_mode is LayoutMode.SIMPLIFIED and forms:
+        if any(
+            form.layout_mode_requested == LayoutMode.SIMPLIFIED.value
+            for form in forms
+        ):
             simplified_form_count = sum(
                 form.layout_mode_used == LayoutMode.SIMPLIFIED.value
                 for form in forms
@@ -319,6 +347,8 @@ class BatchConverter:
                 preview_dir=preview_dir,
                 ui_root=output_dir,
                 font_scale=request.qt_font_scale,
+                font_factors=request.validation.font_scales,
+                size_factors=request.validation.resize_scales,
                 geometry_references={
                     form.output: FormGeometryReference(
                         rect_dlu=form.default_rect_dlu,
@@ -363,7 +393,7 @@ class BatchConverter:
         self,
         multilingual: MultilingualDialog,
         source_dialog_id: str,
-        layout_mode: LayoutMode,
+        layout_policy: LayoutPolicy,
         ui_comments: bool,
         naming_map: NamingMap,
         diagnostics: list[Diagnostic],
@@ -378,7 +408,12 @@ class BatchConverter:
         used_semantic_rules: set[int],
     ) -> FormArtifact | None:
         dialog = multilingual.dialog
-        mapper = ControlMapper(control_map)
+        mapper = ControlMapper(
+            control_map,
+            text_width_safety_factor=(
+                layout_policy.text_width_safety_factor
+            ),
+        )
         try:
             mapped = tuple(mapper.map(control) for control in dialog.controls)
         except ControlMapError as error:
@@ -504,7 +539,16 @@ class BatchConverter:
             layout_mapped,
             semantic_plan,
         )
-        layout = LayoutBuilder().build(
+        layout = LayoutBuilder(
+            coordinate_tolerance=layout_policy.alignment_tolerance_dlu,
+            text_width_safety_factor=(
+                layout_policy.text_width_safety_factor
+            ),
+            max_designer_width_factor=(
+                layout_policy.max_designer_width_factor
+            ),
+            runtime_alternatives=layout_policy.runtime_alternatives,
+        ).build(
             multilingual.layout_dialog,
             layout_mapped,
             naming,
@@ -522,17 +566,28 @@ class BatchConverter:
         simplified_regions = 0
         faithful_fallback_regions = 0
         layout_transformations: tuple[str, ...] = ()
-        if layout_mode is LayoutMode.SIMPLIFIED:
-            simplified = simplify_form(layout.root_widget)
+        if layout_policy.mode is LayoutMode.SIMPLIFIED:
+            simplified = simplify_form(
+                layout.root_widget,
+                layout_policy.simplified,
+                alignment_tolerance_dlu=(
+                    layout_policy.alignment_tolerance_dlu
+                ),
+            )
             layout = replace(layout, root_widget=simplified.root_widget)
             simplified_regions = simplified.simplified_regions
             faithful_fallback_regions = simplified.faithful_fallback_regions
             layout_transformations = simplified.transformations
-            editability = simplified.editability_score
             if simplified_regions:
                 layout_mode_used = LayoutMode.SIMPLIFIED
-        else:
-            editability = editability_score(layout.root_widget)
+        layout = replace(
+            layout,
+            root_widget=apply_gap_growth(
+                layout.root_widget,
+                layout_policy.gap_growth,
+            ),
+        )
+        editability = editability_score(layout.root_widget)
         relative_output = PurePosixPath(
             allocation.output.relative_to(output_dir).as_posix()
         )
@@ -548,6 +603,9 @@ class BatchConverter:
             form_class=dialog_object_name,
             control_map=control_map,
             ui_path=relative_output,
+            text_width_safety_factor=(
+                layout_policy.text_width_safety_factor
+            ),
         )
         diagnostics.extend(localized_form.diagnostics)
         if any(
@@ -695,8 +753,27 @@ class BatchConverter:
                 dialog,
                 naming,
             ),
-            layout_mode_requested=layout_mode.value,
+            layout_mode_requested=layout_policy.mode.value,
             layout_mode_used=layout_mode_used.value,
+            layout_policy=LayoutPolicyArtifact(
+                alignment_tolerance_dlu=(
+                    layout_policy.alignment_tolerance_dlu
+                ),
+                text_width_safety_factor=(
+                    layout_policy.text_width_safety_factor
+                ),
+                max_designer_width_factor=(
+                    layout_policy.max_designer_width_factor
+                ),
+                gap_growth=layout_policy.gap_growth.value,
+                runtime_alternatives=(
+                    layout_policy.runtime_alternatives.value
+                ),
+                simplified_profile=layout_policy.simplified.profile.value,
+                max_serialized_tracks=(
+                    layout_policy.simplified.max_serialized_tracks
+                ),
+            ),
             editability_score=editability,
             simplified_regions=simplified_regions,
             faithful_fallback_regions=faithful_fallback_regions,
@@ -763,6 +840,13 @@ class BatchConverter:
                 str(request.config_path) if request.config_path else None
             ),
             "layout_mode": request.layout_mode.value,
+            "layout": {
+                "default": asdict(request.layout_policies.default),
+                "overrides": [
+                    asdict(override)
+                    for override in request.layout_policies.overrides
+                ],
+            },
             "ui_comments": request.ui_comments,
             "input_groups": [
                 {
@@ -783,6 +867,8 @@ class BatchConverter:
             "translations": [str(path) for path in result.translation_paths],
             "qt_check": {
                 "font_scale": request.qt_font_scale,
+                "font_scales": list(request.validation.font_scales),
+                "resize_scales": list(request.validation.resize_scales),
                 "report": (
                     str(result.qt_report_path) if result.qt_report_path else None
                 ),
@@ -817,6 +903,19 @@ class BatchConverter:
 
 def _resolve_from(root: Path, path: Path) -> Path:
     return path if path.is_absolute() else root / path
+
+
+def _layout_policy_candidates(
+    source_dialog_id: str,
+    resource_id: ResourceId,
+) -> tuple[str, ...]:
+    values = [source_dialog_id, resource_id.display_name]
+    values.extend(resource_id.symbols)
+    if resource_id.ordinal is not None:
+        values.append(f"#{resource_id.ordinal}")
+    if resource_id.name is not None:
+        values.append(resource_id.name)
+    return tuple(dict.fromkeys(values))
 
 
 def _config_location(

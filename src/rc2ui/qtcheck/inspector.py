@@ -17,6 +17,7 @@ def inspect_form(
     temporary_dir: Path,
     factors: tuple[float, ...],
     font_factor: float,
+    font_factors: tuple[float, ...] | None = None,
     runtime: RuntimeInspector,
     uic: Any,
     font_scale: float = 1.0,
@@ -48,6 +49,7 @@ def inspect_form(
         "tested_sizes": [],
         "runtime_snapshots": [],
         "font_test": None,
+        "font_tests": [],
         "source_geometry_checked": isinstance(raw_reference_controls, list),
         "source_control_count": (
             len(raw_reference_controls)
@@ -143,6 +145,7 @@ def inspect_form(
                 path=path,
                 factors=factors,
                 font_factor=font_factor,
+                font_factors=font_factors,
                 geometry_reference=geometry_reference,
                 result=result,
                 diagnostics=diagnostics,

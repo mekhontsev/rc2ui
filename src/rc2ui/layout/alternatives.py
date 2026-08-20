@@ -54,6 +54,7 @@ def collapse_runtime_alternatives(
     next_name: Callable[[str], str],
     forced_pairs: frozenset[frozenset[int]] = frozenset(),
     rejected_pairs: frozenset[frozenset[int]] = frozenset(),
+    require_order_evidence: bool = False,
 ) -> tuple[list[VisualNode], tuple[AlternativeDetection, ...]]:
     """Collapse near-identical sibling rectangles into one visual slot."""
 
@@ -67,6 +68,7 @@ def collapse_runtime_alternatives(
             next_name=next_name,
             forced_pairs=forced_pairs,
             rejected_pairs=rejected_pairs,
+            require_order_evidence=require_order_evidence,
         )
         detections.extend(child_detections)
 
@@ -75,6 +77,7 @@ def collapse_runtime_alternatives(
         tolerance=tolerance,
         forced_pairs=forced_pairs,
         rejected_pairs=rejected_pairs,
+        require_order_evidence=require_order_evidence,
     )
     by_order = {node.order: node for node in nodes}
     grouped_orders = {
@@ -286,6 +289,7 @@ def _alternative_components(
     tolerance: int,
     forced_pairs: frozenset[frozenset[int]],
     rejected_pairs: frozenset[frozenset[int]],
+    require_order_evidence: bool,
 ) -> tuple[_AlternativeComponent, ...]:
     candidates = [
         node
@@ -327,6 +331,11 @@ def _alternative_components(
                     order_distance=abs(ranks[left.order] - ranks[right.order]),
                     layer_offsets=layer_offsets,
                 )
+            if require_order_evidence and evidence and not any(
+                item == "near-z-order" or item.startswith("layer-offset:")
+                for item in evidence
+            ):
+                evidence = ()
             if evidence:
                 adjacency[left.order].add(right.order)
                 adjacency[right.order].add(left.order)

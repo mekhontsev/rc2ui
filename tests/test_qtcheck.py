@@ -678,6 +678,7 @@ class QtCheckTests(unittest.TestCase):
                 (ui,),
                 report_path=report,
                 required=True,
+                font_factors=(1.5, 2.0),
             )
             payload = json.loads(report.read_text(encoding="utf-8"))
 
@@ -710,6 +711,7 @@ class QtCheckTests(unittest.TestCase):
                 (ui,),
                 report_path=report,
                 required=True,
+                font_factors=(1.5, 2.0),
             )
             payload = json.loads(report.read_text(encoding="utf-8"))
 
@@ -720,6 +722,13 @@ class QtCheckTests(unittest.TestCase):
             )
         )
         self.assertTrue(payload["forms"][0]["font_test"]["passed"])
+        self.assertEqual(
+            [
+                item["factor"]
+                for item in payload["forms"][0]["font_tests"]
+            ],
+            [1.5, 2.0],
+        )
         self.assertGreater(
             payload["forms"][0]["font_test"]["font_point_size_after"],
             payload["forms"][0]["font_test"]["font_point_size_before"],
@@ -882,11 +891,15 @@ class QtCheckTests(unittest.TestCase):
                     report_path=root / "report.json",
                     required=True,
                     font_scale=1.25,
+                    font_factors=(1.5, 2.5),
+                    size_factors=(0.9, 1.0, 1.25),
                     geometry_references={ui: reference},
                 )
 
         forms = captured["forms"]
-        self.assertEqual(captured["font_factor"], 2.0)
+        self.assertEqual(captured["font_factor"], 2.5)
+        self.assertEqual(captured["font_factors"], [1.5, 2.5])
+        self.assertEqual(captured["size_factors"], [0.9, 1.0, 1.25])
         self.assertEqual(captured["font_scale"], 1.25)
         self.assertEqual(
             forms[0]["geometry_reference"]["controls"][0]["object_name"],

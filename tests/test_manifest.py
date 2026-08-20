@@ -6,6 +6,11 @@ from pathlib import Path
 
 from rc2ui.application.manifest import load_manifest
 from rc2ui.layout.mode import LayoutMode
+from rc2ui.layout.policy import (
+    GapGrowth,
+    RuntimeAlternativesPolicy,
+    SimplifiedProfile,
+)
 from rc2ui.qtcheck.model import QtCheckMode
 
 
@@ -104,6 +109,129 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(request.qt_font_scale, 1.0)
         self.assertEqual(request.layout_mode, LayoutMode.FAITHFUL)
         self.assertTrue(request.ui_comments)
+
+    def test_loads_typed_layout_and_validation_policies(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            manifest = Path(directory_name, "rc2ui.toml")
+            manifest.write_text(
+                "version = 1\n"
+                'output = "generated"\n'
+                "[layout]\n"
+                'mode = "simplified"\n'
+                "alignment_tolerance_dlu = 4\n"
+                "text_width_safety_factor = 1.2\n"
+                "max_designer_width_factor = 1.75\n"
+                'gap_growth = "minimum"\n'
+                'runtime_alternatives = "source-order"\n'
+                "[layout.simplified]\n"
+                'profile = "conservative"\n'
+                "max_serialized_tracks = 7\n"
+                "[[layout.overrides]]\n"
+                'name = "wide-dialogs"\n'
+                'dialog_regex = "IDD_WIDE_.*"\n'
+                "priority = 2\n"
+                "max_designer_width_factor = 2.25\n"
+                'gap_growth = "outer-minimum"\n'
+                "[layout.overrides.simplified]\n"
+                'profile = "aggressive"\n'
+                "max_serialized_tracks = 4\n"
+                "[validation]\n"
+                'qt = "required"\n'
+                'preview = "previews"\n'
+                "preview_font_scale = 1.4\n"
+                "font_scales = [1.5, 2.0]\n"
+                "resize_scales = [0.8, 1.0, 1.4]\n"
+                "[[input_groups]]\n"
+                'rc = ["main.rc"]\n'
+                'resources = ["main.res"]\n',
+                encoding="utf-8",
+            )
+
+            request = load_manifest(manifest)
+
+        default = request.layout_policies.default
+        self.assertEqual(default.mode, LayoutMode.SIMPLIFIED)
+        self.assertEqual(default.alignment_tolerance_dlu, 4)
+        self.assertEqual(default.text_width_safety_factor, 1.2)
+        self.assertEqual(default.max_designer_width_factor, 1.75)
+        self.assertEqual(default.gap_growth, GapGrowth.MINIMUM)
+        self.assertEqual(
+            default.runtime_alternatives,
+            RuntimeAlternativesPolicy.SOURCE_ORDER,
+        )
+        self.assertEqual(default.simplified.profile, SimplifiedProfile.CONSERVATIVE)
+        self.assertEqual(default.simplified.max_serialized_tracks, 7)
+        override = request.layout_policies.resolve(("IDD_WIDE_REPORT",))
+        self.assertEqual(override.max_designer_width_factor, 2.25)
+        self.assertEqual(override.gap_growth, GapGrowth.OUTER_MINIMUM)
+        self.assertEqual(override.simplified.profile, SimplifiedProfile.AGGRESSIVE)
+        self.assertEqual(override.simplified.max_serialized_tracks, 4)
+        self.assertEqual(request.qt_check, QtCheckMode.REQUIRED)
+        self.assertEqual(request.qt_preview_dir, Path(directory_name, "previews"))
+        self.assertEqual(request.qt_font_scale, 1.4)
+        self.assertEqual(request.validation.font_scales, (1.5, 2.0))
+        self.assertEqual(request.validation.resize_scales, (0.8, 1.0, 1.4))
+
+    def test_exact_layout_override_beats_regex_at_same_priority(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            manifest = Path(directory_name, "rc2ui.toml")
+            manifest.write_text(
+                "version = 1\n"
+                'output = "generated"\n'
+                "[[layout.overrides]]\n"
+                'name = "family"\n'
+                'dialog_regex = "IDD_.*"\n'
+                "alignment_tolerance_dlu = 4\n"
+                "[[layout.overrides]]\n"
+                'name = "exact"\n'
+                'dialog = "IDD_ONE"\n'
+                "alignment_tolerance_dlu = 1\n"
+                "[[input_groups]]\n"
+                'rc = ["main.rc"]\n'
+                'resources = ["main.res"]\n',
+                encoding="utf-8",
+            )
+
+            request = load_manifest(manifest)
+
+        self.assertEqual(
+            request.layout_policies.resolve(("IDD_ONE",)).alignment_tolerance_dlu,
+            1,
+        )
+        self.assertEqual(
+            request.layout_policies.resolve(("IDD_TWO",)).alignment_tolerance_dlu,
+            4,
+        )
+
+    def test_rejects_duplicate_legacy_and_nested_policy_fields(self) -> None:
+        cases = (
+            (
+                'layout_mode = "faithful"\n'
+                "[layout]\n"
+                'mode = "simplified"\n',
+                "layout_mode",
+            ),
+            ('qt_check = "auto"\n[validation]\nqt = "off"\n', "qt_check"),
+            (
+                "qt_font_scale = 1.0\n"
+                "[validation]\npreview_font_scale = 1.5\n",
+                "qt_font_scale",
+            ),
+        )
+        for settings, message in cases:
+            with self.subTest(settings=settings), tempfile.TemporaryDirectory() as name:
+                manifest = Path(name, "rc2ui.toml")
+                manifest.write_text(
+                    "version = 1\n"
+                    'output = "generated"\n'
+                    + settings
+                    + "[[input_groups]]\n"
+                    'rc = ["main.rc"]\n'
+                    'resources = ["main.res"]\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(ValueError, message):
+                    load_manifest(manifest)
 
     def test_rejects_non_boolean_ui_comments(self) -> None:
         for value in ('"false"', "0"):

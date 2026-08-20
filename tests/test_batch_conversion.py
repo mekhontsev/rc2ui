@@ -19,6 +19,12 @@ from rc2ui.application.models import (
 )
 from rc2ui.mapping.overrides import ControlMap
 from rc2ui.layout.mode import LayoutMode
+from rc2ui.layout.policy import (
+    GapGrowth,
+    LayoutOverride,
+    LayoutPolicySet,
+)
+from rc2ui.layout.simplify import simplify_form
 from rc2ui.naming.map import NamingMap
 from rc2ui.qtcheck.discovery import (
     QtBindingAvailability,
@@ -39,6 +45,57 @@ from tests.resource_fixtures import (
 
 
 class BatchConversionTests(unittest.TestCase):
+    def test_dialog_layout_override_is_applied_and_reported(self) -> None:
+        with tempfile.TemporaryDirectory() as directory_name:
+            root = Path(directory_name)
+            rc = root / "main.rc"
+            resource = root / "main.res"
+            rc.write_text(
+                "#define IDD_LOGIN 100\n"
+                "#define IDC_STATIC -1\n"
+                "#define IDC_EDIT1 1001\n",
+                encoding="utf-8",
+            )
+            resource.write_bytes(res_record(5, 100, standard_dialog_payload()))
+            with patch(
+                "rc2ui.application.batch.simplify_form",
+                wraps=simplify_form,
+            ) as simplify:
+                result = BatchConverter().convert(
+                    ConversionRequest(
+                        project_root=root,
+                        output_dir=root / "generated",
+                        input_groups=(InputGroup((rc,), (resource,)),),
+                        layout_policies=LayoutPolicySet(
+                            overrides=(
+                                LayoutOverride(
+                                    "login",
+                                    dialog="IDD_LOGIN",
+                                    mode=LayoutMode.SIMPLIFIED,
+                                    alignment_tolerance_dlu=1,
+                                    gap_growth=GapGrowth.MINIMUM,
+                                ),
+                            ),
+                        ),
+                        qt_check=QtCheckMode.OFF,
+                    )
+                )
+            report = json.loads(result.report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(result.forms[0].layout_mode_requested, "simplified")
+        self.assertEqual(
+            report["forms"][0]["layout_policy"]["alignment_tolerance_dlu"],
+            1,
+        )
+        self.assertEqual(
+            report["forms"][0]["layout_policy"]["gap_growth"],
+            "minimum",
+        )
+        self.assertEqual(
+            simplify.call_args.kwargs["alignment_tolerance_dlu"],
+            1,
+        )
+
     def test_faithful_remains_default_and_simplified_is_reported(self) -> None:
         with tempfile.TemporaryDirectory() as directory_name:
             root = Path(directory_name)
@@ -105,6 +162,19 @@ class BatchConversionTests(unittest.TestCase):
             faithful.forms[0].editability_score,
         )
         self.assertEqual(report["layout_mode"], "simplified")
+        self.assertEqual(report["layout"]["default"]["mode"], "faithful")
+        self.assertEqual(
+            report["forms"][0]["layout_policy"],
+            {
+                "alignment_tolerance_dlu": 3,
+                "gap_growth": "proportional",
+                "max_designer_width_factor": 1.5,
+                "max_serialized_tracks": 5,
+                "runtime_alternatives": "auto",
+                "simplified_profile": "balanced",
+                "text_width_safety_factor": 1.1,
+            },
+        )
         self.assertEqual(
             report["forms"][0]["layout_transformations"],
             ["grid-to-hbox:1"],

@@ -131,11 +131,26 @@ include_paths = ["include", "third_party/include"]
 default_language = 1033
 rc_encoding = "cp1252"
 strict = false
-layout_mode = "faithful"
 ui_comments = true
-qt_check = "auto"
-qt_font_scale = 1.0
-# qt_preview = "qt-previews"
+
+[layout]
+mode = "faithful"
+alignment_tolerance_dlu = 3
+text_width_safety_factor = 1.1
+max_designer_width_factor = 1.5
+gap_growth = "proportional"
+runtime_alternatives = "auto"
+
+[layout.simplified]
+profile = "balanced"
+max_serialized_tracks = 5
+
+[validation]
+qt = "auto"
+preview_font_scale = 1.0
+font_scales = [2.0]
+resize_scales = [0.75, 1.0, 1.5]
+# preview = "qt-previews"
 
 [defines]
 ENTERPRISE = 1
@@ -293,7 +308,8 @@ only unambiguous layout regions with smaller Designer-oriented structures:
 - regular matrices become compact logical grids;
 - long vertical separators create explicit left/right panels; perpendicular
   horizontal separators create nested top/bottom regions, while both sides of
-  a vertical boundary retain at most five common coarse row regions;
+  a vertical boundary retain a configurable number of common coarse row
+  regions;
 - complex dialogs are split into editable vertical bands, with a fine grid
   retained only inside a band whose genuine local overlap requires it;
 - group boxes and other nested containers are simplified independently.
@@ -302,15 +318,16 @@ Inside a separator panel, consecutive visual bands are grouped at effectively
 empty cuts instead of copying every faithful coordinate track; one DLU of
 ordinary authored overlap is tolerated. A terminal region is recursively
 sliced only along such horizontal or vertical cuts. When two rows share guides,
-each slice uses a compact matrix of at most five tracks so aligned edit/spin
-pairs and distant edges remain aligned. The original separator remains one
+each slice uses a compact matrix bounded by `max_serialized_tracks` (five by
+default), so aligned edit/spin pairs and distant edges remain aligned. The
+original separator remains one
 spanning widget rather than being duplicated per row.
 
 Elsewhere, vertical bands and box layouts keep explicit source-proportional
 stretch factors for controls and gaps. A genuinely long one-dimensional row or
 an irreducible overlapping region can therefore still have a long vector:
 removing its structural entries would change Qt's resize distribution. The
-five-track bound applies to the new separator-panel regions where the separator
+configured bound applies to the new separator-panel regions where the separator
 and empty cuts provide enough evidence for safe grouping.
 
 A compact guide grid is also rejected when its weighted span would give any
@@ -329,7 +346,8 @@ cleaned faithful grid; unrelated containers may still be simplified.
 Select the mode in the manifest:
 
 ```toml
-layout_mode = "simplified"
+[layout]
+mode = "simplified"
 ```
 
 or for a one-off run:
@@ -338,9 +356,44 @@ or for a one-off run:
 rc2ui convert --layout-mode simplified --project-root "C:\temp" --output "C:\temp\generated-ui" "C:\temp\main.rc" "C:\temp\main.res"
 ```
 
-The conversion report records the requested and effective mode, an editability
-score, simplified and fallback region counts, and the transformations used for
-each form. Runtime Qt validation applies to both modes.
+The constants used by both modes are explicit, typed project policy rather
+than hidden algorithm settings. They can be tuned globally and overridden for
+one dialog ID or an ID family:
+
+```toml
+[layout]
+alignment_tolerance_dlu = 3
+text_width_safety_factor = 1.1
+max_designer_width_factor = 1.5
+gap_growth = "proportional"
+runtime_alternatives = "auto"
+
+[layout.simplified]
+profile = "balanced"
+max_serialized_tracks = 5
+
+[[layout.overrides]]
+name = "dense-reports"
+dialog_regex = 'IDD_REPORT_.*'
+priority = 10
+alignment_tolerance_dlu = 2
+max_designer_width_factor = 2.0
+
+[layout.overrides.simplified]
+profile = "conservative"
+max_serialized_tracks = 7
+```
+
+An exact `dialog = "IDD_NAME"` selector wins over a regexp at the same
+priority; priority wins first. Equal winners are an error. CLI
+`--layout-mode` changes the default for that run; an explicit per-dialog mode
+can still protect an exceptional form. The complete meanings and tuning
+guidance are in the TOML reference.
+
+The conversion report records the requested and effective mode, fully resolved
+per-form policy, editability score, simplified and fallback region counts, and
+the transformations used for each form. Runtime Qt validation applies to both
+modes.
 
 `GROUPBOX` ownership is inferred from complete geometric containment with a
 small tolerance. A control that merely crosses the frame is not moved inside.
@@ -440,8 +493,8 @@ rc2ui qt-check "C:\temp\generated-ui"
 ```
 
 The checker runs Qt in an isolated offscreen process. It compiles and loads
-forms, activates layouts at smaller, source, and larger sizes, changes the form
-font dynamically, and checks:
+forms, activates layouts at the configured resize scales, changes the form
+font through every configured dynamic-font scale, and checks:
 
 - root layouts, expected widgets, and label buddies;
 - zero-size widgets, clipping, bounds, and unexpected overlap;
@@ -496,17 +549,22 @@ Preview paths mirror the `.ui` paths relative to the checked output root. Thus
 form name while allowing identical basenames in different directories. A
 numeric suffix is used only for a case-insensitive path collision.
 
-Set `qt_font_scale` in the manifest to preview and validate with scaled fonts
-without baking the scale into generated `.ui` files:
+Set `validation.preview_font_scale` in the manifest to preview and validate
+with a scaled base font without baking the scale into generated `.ui` files:
 
 ```toml
-qt_font_scale = 1.5
+[validation]
+preview_font_scale = 1.5
+font_scales = [1.5, 2.0]
+resize_scales = [0.8, 1.0, 1.5]
 ```
 
 The scale is applied both to the platform application font and to explicit
 widget fonts loaded from `.ui`, which otherwise override the application font.
 The default is `1.0`. The direct equivalents are
-`convert --qt-font-scale 1.5` and `qt-check --font-scale 1.5`.
+`convert --qt-font-scale 1.5` and `qt-check --font-scale 1.5`. Dynamic
+`font_scales` are exercised after loading and are independent of the base
+preview scale.
 
 ## Naming rules
 

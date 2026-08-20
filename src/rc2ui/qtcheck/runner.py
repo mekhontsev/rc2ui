@@ -33,11 +33,15 @@ def run_qt_checks(
     preview_dir: Path | None = None,
     ui_root: Path | None = None,
     font_scale: float = 1.0,
+    font_factors: tuple[float, ...] = (2.0,),
+    size_factors: tuple[float, ...] = (0.75, 1.0, 1.5),
     geometry_references: Mapping[Path, FormGeometryReference] | None = None,
     worker_module: str = "rc2ui.qtcheck.worker",
 ) -> QtCheckRun:
     if not math.isfinite(font_scale) or font_scale <= 0:
         raise ValueError("font_scale must be a positive finite number")
+    _validate_factors(font_factors, "font_factors")
+    _validate_factors(size_factors, "size_factors")
     paths = tuple(sorted({path.resolve() for path in ui_paths}, key=str))
     if geometry_references is None:
         geometry_references = _discover_geometry_references(
@@ -79,8 +83,11 @@ def run_qt_checks(
     )
     request = {
         "forms": entries,
-        "size_factors": [0.75, 1.0, 1.5],
-        "font_factor": 2.0,
+        "size_factors": list(size_factors),
+        "font_factors": list(font_factors),
+        # Kept for older external workers that implement the original wire
+        # protocol.  The in-tree worker prefers font_factors.
+        "font_factor": max(font_factors),
         "font_scale": font_scale,
     }
     try:
@@ -119,6 +126,8 @@ def run_qt_checks(
         )
     response["summary"] = report_summary
     response["font_scale"] = font_scale
+    response["font_factors"] = list(font_factors)
+    response["size_factors"] = list(size_factors)
     response["diagnostics"] = [asdict(item) for item in diagnostics]
     _write_report(report_path, response)
     preview_index = (
@@ -140,6 +149,17 @@ def run_qt_checks(
         binding=_optional_string(response.get("binding")),
         binding_version=_optional_string(response.get("binding_version")),
     )
+
+
+def _validate_factors(values: tuple[float, ...], name: str) -> None:
+    if not values or any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        for value in values
+    ):
+        raise ValueError(f"{name} must contain positive finite numbers")
 
 
 def find_ui_files(inputs: tuple[Path, ...]) -> tuple[Path, ...]:

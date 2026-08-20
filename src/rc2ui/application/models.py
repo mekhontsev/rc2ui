@@ -8,9 +8,10 @@ from typing import Iterable
 
 from rc2ui.domain.diagnostics import Diagnostic
 from rc2ui.layout.mode import LayoutMode
+from rc2ui.layout.policy import LayoutPolicySet
 from rc2ui.mapping.overrides import ControlMap
 from rc2ui.naming.map import NamingMap
-from rc2ui.qtcheck.model import QtCheckMode
+from rc2ui.qtcheck.model import QtCheckMode, ValidationPolicy
 from rc2ui.semantics.config import SemanticMap
 
 
@@ -87,20 +88,26 @@ class ConversionRequest:
     default_language: int = 1033
     strict: bool = False
     layout_mode: LayoutMode = LayoutMode.FAITHFUL
+    layout_policies: LayoutPolicySet = LayoutPolicySet()
     ui_comments: bool = True
     qt_check: QtCheckMode = QtCheckMode.AUTO
     qt_preview_dir: Path | None = None
     qt_font_scale: float = 1.0
+    validation: ValidationPolicy = ValidationPolicy()
 
     def __post_init__(self) -> None:
         if not self.input_groups:
             raise ValueError("a conversion request requires an input group")
         if not isinstance(self.layout_mode, LayoutMode):
             raise ValueError("layout_mode must be a LayoutMode value")
+        if not isinstance(self.layout_policies, LayoutPolicySet):
+            raise ValueError("layout_policies must be a LayoutPolicySet")
         if not isinstance(self.ui_comments, bool):
             raise ValueError("ui_comments must be a boolean")
         if not math.isfinite(self.qt_font_scale) or self.qt_font_scale <= 0:
             raise ValueError("qt_font_scale must be a positive finite number")
+        if not isinstance(self.validation, ValidationPolicy):
+            raise ValueError("validation must be a ValidationPolicy")
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,6 +184,17 @@ class RelationEvidenceArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class LayoutPolicyArtifact:
+    alignment_tolerance_dlu: int
+    text_width_safety_factor: float
+    max_designer_width_factor: float
+    gap_growth: str
+    runtime_alternatives: str
+    simplified_profile: str
+    max_serialized_tracks: int
+
+
+@dataclass(frozen=True, slots=True)
 class FormArtifact:
     source: str
     rc_id: str
@@ -195,6 +213,7 @@ class FormArtifact:
     compounds: tuple[CompoundArtifact, ...] = ()
     layout_mode_requested: str = LayoutMode.FAITHFUL.value
     layout_mode_used: str = LayoutMode.FAITHFUL.value
+    layout_policy: LayoutPolicyArtifact | None = None
     editability_score: float = 0.0
     simplified_regions: int = 0
     faithful_fallback_regions: int = 0

@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 
+from rc2ui.layout.policy import SimplifiedPolicy, SimplifiedProfile
 from rc2ui.qt.model import (
     QtEnum,
     QtLayout,
@@ -16,8 +17,6 @@ from rc2ui.qt.model import (
 
 
 _MIN_COMPACT_SOURCE_EXTENT_RATIO = 0.5
-_NEAR_ALIGNMENT_TOLERANCE_DLU = 3.0
-_MAX_SIMPLIFIED_STRETCH_ITEMS = 5
 _SLICE_OVERLAP_TOLERANCE_DLU = 1.0
 
 
@@ -98,12 +97,16 @@ class _Simplifier:
         used_names: Iterable[str],
         *,
         font_height_sensitive: bool,
+        policy: SimplifiedPolicy,
+        alignment_tolerance_dlu: float,
     ) -> None:
         self.simplified_regions = 0
         self.faithful_fallback_regions = 0
         self.transformations: Counter[str] = Counter()
         self.names = _ObjectNameAllocator(used_names)
         self.font_height_sensitive = font_height_sensitive
+        self.policy = policy
+        self.alignment_tolerance_dlu = alignment_tolerance_dlu
 
     def widget(self, widget: QtWidget) -> QtWidget:
         children = tuple(self.widget(child) for child in widget.children)
@@ -127,11 +130,18 @@ class _Simplifier:
             return faithful
         reference = {entry.key: entry.rect for entry in entries}
         raw_compact_candidate, compact_rejected_for_extent = (
-            _compact_grid_candidate(faithful, entries)
+            _compact_grid_candidate(
+                faithful,
+                entries,
+                alignment_tolerance_dlu=self.alignment_tolerance_dlu,
+            )
             if len(entries) >= 2
             else (None, False)
         )
-        preserve_compact_alignment = _has_strong_compact_alignment(entries)
+        preserve_compact_alignment = _has_strong_compact_alignment(
+            entries,
+            tolerance=self.alignment_tolerance_dlu,
+        )
         if (
             compact_rejected_for_extent
             and (
@@ -159,6 +169,7 @@ class _Simplifier:
                 faithful,
                 entries,
                 names=self.names,
+                alignment_tolerance_dlu=self.alignment_tolerance_dlu,
             )
             if len(entries) >= 3
             else None
@@ -169,6 +180,8 @@ class _Simplifier:
                     faithful,
                     entries,
                     names=self.names,
+                    max_serialized_tracks=self.policy.max_serialized_tracks,
+                    alignment_tolerance_dlu=self.alignment_tolerance_dlu,
                 )
                 if len(entries) >= 3
                 else None
@@ -212,12 +225,21 @@ class _Simplifier:
             for candidate in semantic_candidates
         ) + (_clean_faithful_grid(faithful, entries),)
         faithful_cost = _layout_cost(faithful)
+        faithful_friction = _designer_friction(faithful)
         for candidate in candidates:
             if candidate is None:
                 continue
             if not _preserves_topology(reference, candidate.placements):
                 continue
-            if _layout_cost(candidate.layout) >= faithful_cost:
+            candidate_cost = _layout_cost(candidate.layout)
+            candidate_friction = _designer_friction(candidate.layout)
+            if not _profile_accepts_candidate(
+                self.policy.profile,
+                candidate_cost=candidate_cost,
+                faithful_cost=faithful_cost,
+                candidate_friction=candidate_friction,
+                faithful_friction=faithful_friction,
+            ):
                 continue
             if (
                 candidate.transformation == "grid-to-separator-panels"
@@ -252,11 +274,36 @@ class _Simplifier:
         )
 
 
+def _profile_accepts_candidate(
+    profile: SimplifiedProfile,
+    *,
+    candidate_cost: int,
+    faithful_cost: int,
+    candidate_friction: int,
+    faithful_friction: int,
+) -> bool:
+    """Choose aggressiveness without weakening topology safeguards."""
+
+    if profile is SimplifiedProfile.CONSERVATIVE:
+        return (
+            candidate_cost < faithful_cost
+            and candidate_friction < faithful_friction
+        )
+    if profile is SimplifiedProfile.AGGRESSIVE:
+        return candidate_cost < faithful_cost or (
+            candidate_cost == faithful_cost
+            and candidate_friction < faithful_friction
+        )
+    return candidate_cost < faithful_cost
+
+
 def _separator_panels_candidate(
     source: QtLayout,
     entries: tuple[_Entry, ...],
     *,
     names: _ObjectNameAllocator,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> _Candidate | None:
     """Turn long RC separator lines into explicit nested panel boundaries.
 
@@ -291,6 +338,8 @@ def _separator_panels_candidate(
         bounds,
         names=names,
         depth=0,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     if built is None:
         return None
@@ -312,6 +361,8 @@ def _separator_region_layout(
     *,
     names: _ObjectNameAllocator,
     depth: int,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> tuple[QtLayout, int] | None:
     split = _best_separator_split(entries, bounds)
     if split is None:
@@ -323,6 +374,8 @@ def _separator_region_layout(
                 entries,
                 bounds,
                 names=names,
+                max_serialized_tracks=max_serialized_tracks,
+                alignment_tolerance_dlu=alignment_tolerance_dlu,
             ),
             0,
         )
@@ -375,7 +428,11 @@ def _separator_region_layout(
     after_split = _best_separator_split(after, after_bounds)
     if orientation == "vertical" and (
         (before_split is None and after_split is None)
-        or _matching_horizontal_panel_splits(before_split, after_split)
+        or _matching_horizontal_panel_splits(
+            before_split,
+            after_split,
+            tolerance=alignment_tolerance_dlu,
+        )
     ):
         return (
             _shared_vertical_panel_grid(
@@ -388,6 +445,8 @@ def _separator_region_layout(
                 after_bounds,
                 names=names,
                 depth=depth,
+                max_serialized_tracks=max_serialized_tracks,
+                alignment_tolerance_dlu=alignment_tolerance_dlu,
             ),
             1,
         )
@@ -398,6 +457,8 @@ def _separator_region_layout(
         before_bounds,
         names=names,
         depth=depth + 1,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     after_result = _separator_region_layout(
         source,
@@ -405,6 +466,8 @@ def _separator_region_layout(
         after_bounds,
         names=names,
         depth=depth + 1,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     assert before_result is not None
     assert after_result is not None
@@ -447,7 +510,7 @@ def _matching_horizontal_panel_splits(
     before: _SeparatorSplit | None,
     after: _SeparatorSplit | None,
     *,
-    tolerance: float = 3.0,
+    tolerance: float,
 ) -> bool:
     """Recognize one cross-panel horizontal boundary drawn as two lines."""
 
@@ -475,6 +538,8 @@ def _shared_vertical_panel_grid(
     *,
     names: _ObjectNameAllocator,
     depth: int,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> QtLayout:
     """Keep both panels on a small set of common semantic rows.
 
@@ -487,8 +552,14 @@ def _shared_vertical_panel_grid(
     terminal layout preserves the original geometry inside each row.
     """
 
-    left_entries = _snap_near_horizontal_edges(left_entries)
-    right_entries = _snap_near_horizontal_edges(right_entries)
+    left_entries = _snap_near_horizontal_edges(
+        left_entries,
+        tolerance=alignment_tolerance_dlu,
+    )
+    right_entries = _snap_near_horizontal_edges(
+        right_entries,
+        tolerance=alignment_tolerance_dlu,
+    )
 
     entry_side = {
         entry.key: 0 for entry in left_entries
@@ -496,7 +567,8 @@ def _shared_vertical_panel_grid(
         entry.key: 2 for entry in right_entries
     }
     bands = _coarse_vertical_band_groups(
-        _vertical_overlap_bands(left_entries + right_entries)
+        _vertical_overlap_bands(left_entries + right_entries),
+        max_serialized_tracks=max_serialized_tracks,
     )
     items: list[QtLayoutItem] = []
     row_weights: list[int] = []
@@ -541,6 +613,8 @@ def _shared_vertical_panel_grid(
                 side_entries,
                 row_bounds,
                 names=names,
+                max_serialized_tracks=max_serialized_tracks,
+                alignment_tolerance_dlu=alignment_tolerance_dlu,
             )
             side_name = "Left" if column == 0 else "Right"
             side_layout = replace(
@@ -584,6 +658,8 @@ def _shared_vertical_panel_grid(
 
 def _snap_near_horizontal_edges(
     entries: tuple[_Entry, ...],
+    *,
+    tolerance: float,
 ) -> tuple[_Entry, ...]:
     """Treat small hand-authored edge offsets as shared panel guides."""
 
@@ -596,6 +672,7 @@ def _snap_near_horizontal_edges(
             for value in left_values
             if any(abs(value - right) < 0.5 for right in right_values)
         },
+        tolerance=tolerance,
     )
     right_guides = _clustered_edge_replacements(
         right_values,
@@ -604,6 +681,7 @@ def _snap_near_horizontal_edges(
             for value in right_values
             if any(abs(value - left) < 0.5 for left in left_values)
         },
+        tolerance=tolerance,
     )
     return tuple(
         replace(
@@ -622,13 +700,14 @@ def _clustered_edge_replacements(
     values: tuple[float, ...],
     *,
     locked: set[float],
+    tolerance: float,
 ) -> dict[float, float]:
     ordered = sorted(set(values))
     clusters: list[list[float]] = []
     for value in ordered:
         if (
             not clusters
-            or value - clusters[-1][0] > _NEAR_ALIGNMENT_TOLERANCE_DLU
+            or value - clusters[-1][0] > tolerance
         ):
             clusters.append([value])
         else:
@@ -645,13 +724,15 @@ def _clustered_edge_replacements(
 
 def _coarse_vertical_band_groups(
     bands: tuple[tuple[_Entry, ...], ...],
+    *,
+    max_serialized_tracks: int,
 ) -> tuple[tuple[tuple[_Entry, ...], ...], ...]:
     """Group adjacent bands while retaining the strongest empty cuts."""
 
     if not bands:
         return ()
     groups: list[tuple[tuple[_Entry, ...], ...]] = [bands]
-    while len(groups) < min(len(bands), _MAX_SIMPLIFIED_STRETCH_ITEMS):
+    while len(groups) < min(len(bands), max_serialized_tracks):
         group_index = max(
             (index for index, group in enumerate(groups) if len(group) > 1),
             key=lambda index: len(groups[index]),
@@ -824,6 +905,8 @@ def _terminal_region_layout(
     bounds: _Rect,
     *,
     names: _ObjectNameAllocator,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> QtLayout:
     """Use only strong local patterns inside a separator-defined panel."""
 
@@ -849,12 +932,18 @@ def _terminal_region_layout(
     if (
         row_candidate is not None
         and len(row_candidate.layout.stretch)
-        > _MAX_SIMPLIFIED_STRETCH_ITEMS
+        > max_serialized_tracks
     ):
         row_candidate = None
     candidates = (
         row_candidate,
-        _slicing_candidate(source, entries, names=names),
+        _slicing_candidate(
+            source,
+            entries,
+            names=names,
+            max_serialized_tracks=max_serialized_tracks,
+            alignment_tolerance_dlu=alignment_tolerance_dlu,
+        ),
     )
     faithful_cost = _layout_cost(faithful)
     faithful_friction = _designer_friction(faithful)
@@ -875,17 +964,27 @@ def _terminal_region_layout(
             _layout_cost(wrapped.layout) < faithful_cost
             or _designer_friction(wrapped.layout) < faithful_friction
             or (
-                _has_long_serialized_vector(faithful)
-                and not _has_long_serialized_vector(wrapped.layout)
+                _has_long_serialized_vector(
+                    faithful,
+                    max_serialized_tracks=max_serialized_tracks,
+                )
+                and not _has_long_serialized_vector(
+                    wrapped.layout,
+                    max_serialized_tracks=max_serialized_tracks,
+                )
             )
         ):
             return wrapped.layout
     return faithful
 
 
-def _has_long_serialized_vector(layout: QtLayout) -> bool:
+def _has_long_serialized_vector(
+    layout: QtLayout,
+    *,
+    max_serialized_tracks: int,
+) -> bool:
     if any(
-        len(values) > _MAX_SIMPLIFIED_STRETCH_ITEMS
+        len(values) > max_serialized_tracks
         for values in (
             layout.stretch,
             layout.row_stretch,
@@ -895,11 +994,17 @@ def _has_long_serialized_vector(layout: QtLayout) -> bool:
     ):
         return True
     return any(
-        _has_long_serialized_vector(item.layout)
+        _has_long_serialized_vector(
+            item.layout,
+            max_serialized_tracks=max_serialized_tracks,
+        )
         for item in layout.items
         if item.layout is not None
     ) or any(
-        _has_long_serialized_vector(item.widget.layout)
+        _has_long_serialized_vector(
+            item.widget.layout,
+            max_serialized_tracks=max_serialized_tracks,
+        )
         for item in layout.items
         if item.widget is not None and item.widget.layout is not None
     )
@@ -910,10 +1015,17 @@ def _slicing_candidate(
     entries: tuple[_Entry, ...],
     *,
     names: _ObjectNameAllocator,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> _Candidate | None:
     """Recursively split a region only along source-empty axis cuts."""
 
-    partition = _best_slice_partition(source, entries)
+    partition = _best_slice_partition(
+        source,
+        entries,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
+    )
     if partition is None:
         return None
     horizontal, first, second, gap = partition
@@ -922,12 +1034,16 @@ def _slicing_candidate(
         first,
         horizontal=horizontal,
         names=names,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     second_item = _sliced_group_item(
         source,
         second,
         horizontal=horizontal,
         names=names,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     if first_item is None or second_item is None:
         return None
@@ -969,6 +1085,8 @@ def _sliced_group_item(
     *,
     horizontal: bool,
     names: _ObjectNameAllocator,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> QtLayoutItem | None:
     if len(entries) == 1:
         return _axis_layout_item(
@@ -987,7 +1105,7 @@ def _sliced_group_item(
         if (
             candidate is not None
             and len(candidate.layout.stretch)
-            <= _MAX_SIMPLIFIED_STRETCH_ITEMS
+            <= max_serialized_tracks
         ):
             return QtLayoutItem(
                 layout=replace(
@@ -995,7 +1113,12 @@ def _sliced_group_item(
                     object_name=names.next(f"{source.object_name}Slice"),
                 )
             )
-    compact = _bounded_compact_candidate(source, entries)
+    compact = _bounded_compact_candidate(
+        source,
+        entries,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
+    )
     if compact is not None:
         return QtLayoutItem(
             layout=replace(
@@ -1003,7 +1126,13 @@ def _sliced_group_item(
                 object_name=names.next(f"{source.object_name}Slice"),
             )
         )
-    candidate = _slicing_candidate(source, entries, names=names)
+    candidate = _slicing_candidate(
+        source,
+        entries,
+        names=names,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
+    )
     if candidate is None:
         return None
     return QtLayoutItem(
@@ -1017,6 +1146,9 @@ def _sliced_group_item(
 def _best_slice_partition(
     source: QtLayout,
     entries: tuple[_Entry, ...],
+    *,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> tuple[bool, tuple[_Entry, ...], tuple[_Entry, ...], float] | None:
     candidates: list[
         tuple[int, float, int, bool, tuple[_Entry, ...], tuple[_Entry, ...]]
@@ -1047,7 +1179,12 @@ def _best_slice_partition(
             if gap < -_SLICE_OVERLAP_TOLERANCE_DLU:
                 continue
             direct_groups = sum(
-                not _has_direct_slice_layout(source, group)
+                not _has_direct_slice_layout(
+                    source,
+                    group,
+                    max_serialized_tracks=max_serialized_tracks,
+                    alignment_tolerance_dlu=alignment_tolerance_dlu,
+                )
                 for group in (first, second)
             )
             candidates.append(
@@ -1077,6 +1214,9 @@ def _best_slice_partition(
 def _has_direct_slice_layout(
     source: QtLayout,
     entries: tuple[_Entry, ...],
+    *,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> bool:
     if len(entries) == 1:
         return True
@@ -1085,23 +1225,35 @@ def _has_direct_slice_layout(
         if ordered is not None and _axis_serialized_item_count(
             ordered,
             horizontal=horizontal,
-        ) <= _MAX_SIMPLIFIED_STRETCH_ITEMS:
+        ) <= max_serialized_tracks:
             return True
-    return _bounded_compact_candidate(source, entries) is not None
+    return _bounded_compact_candidate(
+        source,
+        entries,
+        max_serialized_tracks=max_serialized_tracks,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
+    ) is not None
 
 
 def _bounded_compact_candidate(
     source: QtLayout,
     entries: tuple[_Entry, ...],
+    *,
+    max_serialized_tracks: int,
+    alignment_tolerance_dlu: float,
 ) -> _Candidate | None:
     candidate, rejected_for_extent = _compact_grid_candidate(
         source,
         entries,
         preserve_touching=True,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     if candidate is None or rejected_for_extent:
         return None
-    if _has_long_serialized_vector(candidate.layout):
+    if _has_long_serialized_vector(
+        candidate.layout,
+        max_serialized_tracks=max_serialized_tracks,
+    ):
         return None
     if not _preserves_topology(
         {entry.key: entry.rect for entry in entries},
@@ -1265,12 +1417,19 @@ def _coordinate_region_layout(
     )
 
 
-def simplify_form(root_widget: QtWidget) -> SimplificationResult:
+def simplify_form(
+    root_widget: QtWidget,
+    policy: SimplifiedPolicy = SimplifiedPolicy(),
+    *,
+    alignment_tolerance_dlu: float = 3.0,
+) -> SimplificationResult:
     """Create a Designer-oriented form without mutating faithful planning."""
 
     simplifier = _Simplifier(
         _object_names(root_widget),
         font_height_sensitive=_widget_contains_wrapped_label(root_widget),
+        policy=policy,
+        alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
     simplified = _retain_root_width_ruler(
         root_widget,
@@ -1729,6 +1888,7 @@ def _vertical_bands_candidate(
     entries: tuple[_Entry, ...],
     *,
     names: _ObjectNameAllocator,
+    alignment_tolerance_dlu: float,
 ) -> _Candidate | None:
     """Replace a fine global grid with editable horizontal row layouts."""
 
@@ -1769,6 +1929,7 @@ def _vertical_bands_candidate(
             source,
             band,
             names=names,
+            alignment_tolerance_dlu=alignment_tolerance_dlu,
         )
         if row_candidate is None:
             return None
@@ -1838,6 +1999,7 @@ def _horizontal_band_candidate(
     entries: tuple[_Entry, ...],
     *,
     names: _ObjectNameAllocator,
+    alignment_tolerance_dlu: float,
 ) -> _Candidate | None:
     if len(entries) == 1:
         [entry] = entries
@@ -1871,6 +2033,7 @@ def _horizontal_band_candidate(
             candidate, rejected_for_extent = _compact_grid_candidate(
                 source,
                 entries,
+                alignment_tolerance_dlu=alignment_tolerance_dlu,
             )
             if rejected_for_extent:
                 candidate = (
@@ -1957,6 +2120,7 @@ def _compact_grid_candidate(
     entries: tuple[_Entry, ...],
     *,
     preserve_touching: bool = False,
+    alignment_tolerance_dlu: float,
 ) -> tuple[_Candidate | None, bool]:
     guide_entries = tuple(
         entry
@@ -1965,10 +2129,12 @@ def _compact_grid_candidate(
         or entry.item.widget.class_name not in {"QGroupBox", "QFrame"}
     ) or entries
     row_guides = _cluster_values(
-        entry.rect.vertical_center for entry in guide_entries
+        (entry.rect.vertical_center for entry in guide_entries),
+        tolerance=alignment_tolerance_dlu,
     )
     column_guides = _cluster_values(
-        entry.rect.horizontal_center for entry in guide_entries
+        (entry.rect.horizontal_center for entry in guide_entries),
+        tolerance=alignment_tolerance_dlu,
     )
     if not row_guides or not column_guides:
         return None, False
@@ -2085,14 +2251,22 @@ def _entries_contain_wrapped_label(entries: tuple[_Entry, ...]) -> bool:
     return any(_item_contains_wrapped_label(entry.item) for entry in entries)
 
 
-def _has_strong_compact_alignment(entries: tuple[_Entry, ...]) -> bool:
+def _has_strong_compact_alignment(
+    entries: tuple[_Entry, ...],
+    *,
+    tolerance: float,
+) -> bool:
     """Keep a shared grid when independent rows would sever strong guides."""
 
     for edge in (
         lambda entry: entry.rect.left,
         lambda entry: entry.rect.right,
     ):
-        for group in _near_alignment_groups(entries, edge):
+        for group in _near_alignment_groups(
+            entries,
+            edge,
+            tolerance=tolerance,
+        ):
             if _alignment_group_is_strong(group):
                 return True
 
@@ -2101,6 +2275,7 @@ def _has_strong_compact_alignment(entries: tuple[_Entry, ...]) -> bool:
         for group in _near_alignment_groups(
             entries,
             lambda entry: entry.rect.vertical_center,
+            tolerance=tolerance,
         )
     )
 
@@ -2109,7 +2284,7 @@ def _near_alignment_groups(
     entries: tuple[_Entry, ...],
     value_for: Callable[[_Entry], float],
     *,
-    tolerance: float = _NEAR_ALIGNMENT_TOLERANCE_DLU,
+    tolerance: float,
 ) -> tuple[list[_Entry], ...]:
     groups: list[list[_Entry]] = []
     previous: float | None = None
@@ -2346,7 +2521,7 @@ def _overlap_groups(
 def _cluster_values(
     values: Iterable[float],
     *,
-    tolerance: float = 3.0,
+    tolerance: float,
 ) -> tuple[float, ...]:
     ordered = sorted(float(value) for value in values)
     clusters: list[list[float]] = []

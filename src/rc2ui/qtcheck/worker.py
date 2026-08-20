@@ -46,7 +46,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     runtime.scale_application_font(font_scale)
 
     factors = tuple(float(value) for value in request.get("size_factors", [1.0]))
-    font_factor = float(request.get("font_factor", 2.0))
+    raw_font_factors = request.get(
+        "font_factors",
+        [request.get("font_factor", 2.0)],
+    )
+    font_factors = tuple(float(value) for value in raw_font_factors)
+    font_factor = max(font_factors)
     forms: list[dict[str, object]] = []
     diagnostics: list[dict[str, str]] = []
     with tempfile.TemporaryDirectory(prefix="rc2ui-qt-") as directory_name:
@@ -58,6 +63,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 temporary_dir=temporary_dir,
                 factors=factors,
                 font_factor=font_factor,
+                font_factors=font_factors,
                 runtime=runtime,
                 uic=uic,
                 font_scale=font_scale,
@@ -74,6 +80,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "qt_version": binding.qt_version,
             "environment": runtime.environment_metrics(),
             "font_scale": font_scale,
+            "font_factors": list(font_factors),
+            "size_factors": list(factors),
             "forms": forms,
             "diagnostics": diagnostics,
         },

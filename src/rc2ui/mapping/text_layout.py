@@ -4,7 +4,7 @@ from unicodedata import combining, east_asian_width
 
 
 _AVERAGE_CHARACTER_WIDTH_DLU = 4.0
-_TEXT_WIDTH_SAFETY_FACTOR = 1.1
+_DEFAULT_TEXT_WIDTH_SAFETY_FACTOR = 1.1
 _NARROW_CHARACTERS = frozenset(" !'(),.:;I[]`ijl|\u00b7")
 _WIDE_CHARACTERS = frozenset("%&@MWQmw")
 _TEXT_PADDING_DLU = {
@@ -20,15 +20,15 @@ _TEXT_PADDING_DLU = {
 def estimated_control_text_width_dlu(
     text: str,
     qt_class: str,
+    *,
+    safety_factor: float = _DEFAULT_TEXT_WIDTH_SAFETY_FACTOR,
 ) -> float | None:
     """Estimate the single-line width including native Qt decoration."""
 
     padding_dlu = _TEXT_PADDING_DLU.get(qt_class)
     if padding_dlu is None:
         return None
-    return (
-        estimated_text_width_dlu(text) + padding_dlu
-    ) * _TEXT_WIDTH_SAFETY_FACTOR
+    return (estimated_text_width_dlu(text) + padding_dlu) * safety_factor
 
 
 def wrap_control_text_dlu(
@@ -36,13 +36,14 @@ def wrap_control_text_dlu(
     *,
     qt_class: str,
     width_dlu: int,
+    safety_factor: float = _DEFAULT_TEXT_WIDTH_SAFETY_FACTOR,
 ) -> str:
     """Insert stable word breaks for Qt buttons lacking native word wrap."""
 
     padding_dlu = _TEXT_PADDING_DLU.get(qt_class, 0.0)
     available = max(
         _AVERAGE_CHARACTER_WIDTH_DLU,
-        width_dlu / _TEXT_WIDTH_SAFETY_FACTOR - padding_dlu,
+        width_dlu / safety_factor - padding_dlu,
     )
     normalized = text.replace("\r\n", "\n").replace("\r", "\n")
     return "\n".join(

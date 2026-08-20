@@ -12,9 +12,18 @@ from rc2ui.application.models import (
     ProjectRules,
 )
 from rc2ui.layout.mode import LayoutMode
+from rc2ui.layout.policy import (
+    GapGrowth,
+    LayoutOverride,
+    LayoutPolicy,
+    LayoutPolicySet,
+    RuntimeAlternativesPolicy,
+    SimplifiedPolicy,
+    SimplifiedProfile,
+)
 from rc2ui.mapping.overrides import ControlMap, ControlMapError
 from rc2ui.naming.map import NamingMap, NamingMapError
-from rc2ui.qtcheck.model import QtCheckMode
+from rc2ui.qtcheck.model import QtCheckMode, ValidationPolicy
 from rc2ui.semantics.config import SemanticMap, SemanticMapError
 
 
@@ -28,10 +37,12 @@ _TOP_LEVEL_FIELDS = frozenset(
         "rc_encoding",
         "strict",
         "layout_mode",
+        "layout",
         "ui_comments",
         "qt_check",
         "qt_font_scale",
         "qt_preview",
+        "validation",
         "defines",
         "input_groups",
         "naming",
@@ -125,35 +136,85 @@ def load_manifest(path: Path) -> ConversionRequest:
     strict = data.get("strict", False)
     if not isinstance(strict, bool):
         raise ManifestError("strict must be a boolean")
-    raw_layout_mode = data.get("layout_mode", LayoutMode.FAITHFUL.value)
-    try:
-        layout_mode = LayoutMode(raw_layout_mode)
-    except (TypeError, ValueError) as error:
-        choices = ", ".join(mode.value for mode in LayoutMode)
-        raise ManifestError(f"layout_mode must be one of: {choices}") from error
+    layout_policies = _layout_policies(data)
+    layout_mode = layout_policies.default.mode
     ui_comments = data.get("ui_comments", True)
     if not isinstance(ui_comments, bool):
         raise ManifestError("ui_comments must be a boolean")
-    raw_qt_check = data.get("qt_check", QtCheckMode.AUTO.value)
+    raw_validation = _table(data, "validation")
+    _reject_unknown(
+        raw_validation,
+        {
+            "qt",
+            "preview",
+            "preview_font_scale",
+            "font_scales",
+            "resize_scales",
+        },
+        "validation",
+    )
+    if "qt_check" in data and "qt" in raw_validation:
+        raise ManifestError(
+            "use either qt_check or validation.qt, not both"
+        )
+    raw_qt_check = raw_validation.get(
+        "qt",
+        data.get("qt_check", QtCheckMode.AUTO.value),
+    )
     try:
         qt_check = QtCheckMode(raw_qt_check)
     except (TypeError, ValueError) as error:
         choices = ", ".join(mode.value for mode in QtCheckMode)
-        raise ManifestError(f"qt_check must be one of: {choices}") from error
-    raw_qt_preview = data.get("qt_preview")
+        field = "validation.qt" if "qt" in raw_validation else "qt_check"
+        raise ManifestError(f"{field} must be one of: {choices}") from error
+    if "qt_preview" in data and "preview" in raw_validation:
+        raise ManifestError(
+            "use either qt_preview or validation.preview, not both"
+        )
+    raw_qt_preview = raw_validation.get("preview", data.get("qt_preview"))
     if raw_qt_preview is not None and (
         not isinstance(raw_qt_preview, str) or not raw_qt_preview
     ):
-        raise ManifestError("qt_preview must be a non-empty string")
+        field = (
+            "validation.preview"
+            if "preview" in raw_validation
+            else "qt_preview"
+        )
+        raise ManifestError(f"{field} must be a non-empty string")
     qt_preview = (
         _path(project_root, raw_qt_preview)
         if raw_qt_preview is not None
         else None
     )
-    qt_font_scale = _positive_float(
-        data.get("qt_font_scale", 1.0),
-        "qt_font_scale",
+    if "qt_font_scale" in data and "preview_font_scale" in raw_validation:
+        raise ManifestError(
+            "use either qt_font_scale or validation.preview_font_scale, not both"
+        )
+    preview_scale_field = (
+        "validation.preview_font_scale"
+        if "preview_font_scale" in raw_validation
+        else "qt_font_scale"
     )
+    qt_font_scale = _positive_float(
+        raw_validation.get(
+            "preview_font_scale",
+            data.get("qt_font_scale", 1.0),
+        ),
+        preview_scale_field,
+    )
+    try:
+        validation = ValidationPolicy(
+            font_scales=_positive_float_array(
+                raw_validation.get("font_scales", [2.0]),
+                "validation.font_scales",
+            ),
+            resize_scales=_positive_float_array(
+                raw_validation.get("resize_scales", [0.75, 1.0, 1.5]),
+                "validation.resize_scales",
+            ),
+        )
+    except ValueError as error:
+        raise ManifestError(str(error)) from error
 
     return ConversionRequest(
         project_root=project_root,
@@ -167,11 +228,211 @@ def load_manifest(path: Path) -> ConversionRequest:
         default_language=language,
         strict=strict,
         layout_mode=layout_mode,
+        layout_policies=layout_policies,
         ui_comments=ui_comments,
         qt_check=qt_check,
         qt_preview_dir=qt_preview,
         qt_font_scale=qt_font_scale,
+        validation=validation,
     )
+
+
+def _layout_policies(data: dict[str, object]) -> LayoutPolicySet:
+    raw = _table(data, "layout")
+    _reject_unknown(
+        raw,
+        {
+            "mode",
+            "alignment_tolerance_dlu",
+            "text_width_safety_factor",
+            "max_designer_width_factor",
+            "gap_growth",
+            "runtime_alternatives",
+            "simplified",
+            "overrides",
+        },
+        "layout",
+    )
+    if "layout_mode" in data and "mode" in raw:
+        raise ManifestError("use either layout_mode or layout.mode, not both")
+    mode = _enum(
+        LayoutMode,
+        raw.get("mode", data.get("layout_mode", LayoutMode.FAITHFUL.value)),
+        "layout.mode" if "mode" in raw else "layout_mode",
+    )
+    simplified = _simplified_policy(
+        _table(raw, "simplified"),
+        "layout.simplified",
+    )
+    try:
+        default = LayoutPolicy(
+            mode=mode,
+            alignment_tolerance_dlu=_nonnegative_integer(
+                raw.get("alignment_tolerance_dlu", 3),
+                "layout.alignment_tolerance_dlu",
+            ),
+            text_width_safety_factor=_positive_float(
+                raw.get("text_width_safety_factor", 1.1),
+                "layout.text_width_safety_factor",
+            ),
+            max_designer_width_factor=_positive_float(
+                raw.get("max_designer_width_factor", 1.5),
+                "layout.max_designer_width_factor",
+            ),
+            gap_growth=_enum(
+                GapGrowth,
+                raw.get("gap_growth", GapGrowth.PROPORTIONAL.value),
+                "layout.gap_growth",
+            ),
+            runtime_alternatives=_enum(
+                RuntimeAlternativesPolicy,
+                raw.get(
+                    "runtime_alternatives",
+                    RuntimeAlternativesPolicy.AUTO.value,
+                ),
+                "layout.runtime_alternatives",
+            ),
+            simplified=simplified,
+        )
+    except ValueError as error:
+        raise ManifestError(str(error)) from error
+
+    raw_overrides = raw.get("overrides", [])
+    if not isinstance(raw_overrides, list):
+        raise ManifestError("layout.overrides must be an array of tables")
+    overrides = tuple(
+        _layout_override(item, index)
+        for index, item in enumerate(raw_overrides, 1)
+    )
+    return LayoutPolicySet(default, overrides)
+
+
+def _simplified_policy(
+    raw: dict[str, object],
+    location: str,
+) -> SimplifiedPolicy:
+    _reject_unknown(raw, {"profile", "max_serialized_tracks"}, location)
+    try:
+        return SimplifiedPolicy(
+            profile=_enum(
+                SimplifiedProfile,
+                raw.get("profile", SimplifiedProfile.BALANCED.value),
+                f"{location}.profile",
+            ),
+            max_serialized_tracks=_integer(
+                raw.get("max_serialized_tracks", 5),
+                f"{location}.max_serialized_tracks",
+            ),
+        )
+    except ValueError as error:
+        raise ManifestError(str(error)) from error
+
+
+def _layout_override(raw: object, index: int) -> LayoutOverride:
+    location = f"layout.overrides #{index}"
+    if not isinstance(raw, dict):
+        raise ManifestError(f"{location} must be a table")
+    _reject_unknown(
+        raw,
+        {
+            "name",
+            "dialog",
+            "dialog_regex",
+            "priority",
+            "mode",
+            "alignment_tolerance_dlu",
+            "text_width_safety_factor",
+            "max_designer_width_factor",
+            "gap_growth",
+            "runtime_alternatives",
+            "simplified",
+        },
+        location,
+    )
+    raw_simplified = _table(raw, "simplified")
+    _reject_unknown(
+        raw_simplified,
+        {"profile", "max_serialized_tracks"},
+        f"{location}.simplified",
+    )
+    name = raw.get("name", f"override-{index}")
+    if not isinstance(name, str) or not name:
+        raise ManifestError(f"{location}.name must be a non-empty string")
+    for field in ("dialog", "dialog_regex"):
+        value = raw.get(field)
+        if value is not None and (not isinstance(value, str) or not value):
+            raise ManifestError(
+                f"{location}.{field} must be a non-empty string"
+            )
+    try:
+        return LayoutOverride(
+            name=name,
+            dialog=raw.get("dialog"),
+            dialog_regex=raw.get("dialog_regex"),
+            priority=_integer(raw.get("priority", 0), f"{location}.priority"),
+            mode=(
+                _enum(LayoutMode, raw["mode"], f"{location}.mode")
+                if "mode" in raw
+                else None
+            ),
+            alignment_tolerance_dlu=(
+                _nonnegative_integer(
+                    raw["alignment_tolerance_dlu"],
+                    f"{location}.alignment_tolerance_dlu",
+                )
+                if "alignment_tolerance_dlu" in raw
+                else None
+            ),
+            text_width_safety_factor=(
+                _positive_float(
+                    raw["text_width_safety_factor"],
+                    f"{location}.text_width_safety_factor",
+                )
+                if "text_width_safety_factor" in raw
+                else None
+            ),
+            max_designer_width_factor=(
+                _positive_float(
+                    raw["max_designer_width_factor"],
+                    f"{location}.max_designer_width_factor",
+                )
+                if "max_designer_width_factor" in raw
+                else None
+            ),
+            gap_growth=(
+                _enum(GapGrowth, raw["gap_growth"], f"{location}.gap_growth")
+                if "gap_growth" in raw
+                else None
+            ),
+            runtime_alternatives=(
+                _enum(
+                    RuntimeAlternativesPolicy,
+                    raw["runtime_alternatives"],
+                    f"{location}.runtime_alternatives",
+                )
+                if "runtime_alternatives" in raw
+                else None
+            ),
+            simplified_profile=(
+                _enum(
+                    SimplifiedProfile,
+                    raw_simplified["profile"],
+                    f"{location}.simplified.profile",
+                )
+                if "profile" in raw_simplified
+                else None
+            ),
+            max_serialized_tracks=(
+                _integer(
+                    raw_simplified["max_serialized_tracks"],
+                    f"{location}.simplified.max_serialized_tracks",
+                )
+                if "max_serialized_tracks" in raw_simplified
+                else None
+            ),
+        )
+    except ValueError as error:
+        raise ManifestError(str(error)) from error
 
 
 def _project_rules(data: dict[str, object], path: Path) -> ProjectRules:
@@ -258,3 +519,46 @@ def _positive_float(value: object, field: str) -> float:
     if not math.isfinite(result) or result <= 0:
         raise ManifestError(f"{field} must be a positive finite number")
     return result
+
+
+def _positive_float_array(value: object, field: str) -> tuple[float, ...]:
+    if not isinstance(value, list) or not value:
+        raise ManifestError(f"{field} must be a non-empty array")
+    return tuple(
+        _positive_float(item, f"{field}[{index}]")
+        for index, item in enumerate(value, 1)
+    )
+
+
+def _nonnegative_integer(value: object, field: str) -> int:
+    result = _integer(value, field)
+    if result < 0:
+        raise ManifestError(f"{field} must be a non-negative integer")
+    return result
+
+
+def _table(table: dict[str, object], key: str) -> dict[str, object]:
+    value = table.get(key, {})
+    if not isinstance(value, dict):
+        raise ManifestError(f"{key} must be a table")
+    return value
+
+
+def _reject_unknown(
+    table: dict[str, object],
+    allowed: set[str],
+    location: str,
+) -> None:
+    unexpected = sorted(set(table) - allowed)
+    if unexpected:
+        raise ManifestError(
+            f"{location}: unexpected field(s): " + ", ".join(unexpected)
+        )
+
+
+def _enum(enum_type: type, value: object, field: str):
+    try:
+        return enum_type(value)
+    except (TypeError, ValueError) as error:
+        choices = ", ".join(item.value for item in enum_type)
+        raise ManifestError(f"{field} must be one of: {choices}") from error

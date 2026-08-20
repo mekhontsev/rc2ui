@@ -68,12 +68,18 @@ TBS_VERT = 0x00000002
 
 
 class ControlMapper:
-    def __init__(self, overrides: ControlMap | None = None) -> None:
+    def __init__(
+        self,
+        overrides: ControlMap | None = None,
+        *,
+        text_width_safety_factor: float = 1.1,
+    ) -> None:
         self.overrides = overrides
+        self.text_width_safety_factor = text_width_safety_factor
 
     def map(self, control: Control) -> MappedControl:
         if self.overrides and (mapped := self.overrides.map(control)):
-            return _finalize_mapping(mapped)
+            return _finalize_mapping(mapped, self.text_width_safety_factor)
         class_name = control.class_name.casefold()
         if class_name == "button":
             mapped = self._button(control)
@@ -89,7 +95,7 @@ class ControlMapper:
             mapped = self._scrollbar(control)
         else:
             mapped = self._common_or_custom(control, class_name)
-        return _finalize_mapping(mapped)
+        return _finalize_mapping(mapped, self.text_width_safety_factor)
 
     def _button(self, control: Control) -> MappedControl:
         type_ = control.style & BS_TYPEMASK
@@ -659,11 +665,19 @@ def _property_if_text(name: str, text: str | None) -> tuple[QtProperty, ...]:
     return (QtProperty(name, QtString(text)),) if text is not None else ()
 
 
-def _finalize_mapping(mapped: MappedControl) -> MappedControl:
-    return _with_common_properties(_with_multiline_button_text(mapped))
+def _finalize_mapping(
+    mapped: MappedControl,
+    text_width_safety_factor: float,
+) -> MappedControl:
+    return _with_common_properties(
+        _with_multiline_button_text(mapped, text_width_safety_factor)
+    )
 
 
-def _with_multiline_button_text(mapped: MappedControl) -> MappedControl:
+def _with_multiline_button_text(
+    mapped: MappedControl,
+    text_width_safety_factor: float,
+) -> MappedControl:
     control = mapped.control
     if (
         mapped.qt_class
@@ -678,6 +692,7 @@ def _with_multiline_button_text(mapped: MappedControl) -> MappedControl:
         control.text,
         qt_class=mapped.qt_class,
         width_dlu=control.rect.width,
+        safety_factor=text_width_safety_factor,
     )
     if "\n" not in wrapped:
         return mapped

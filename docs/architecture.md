@@ -1080,6 +1080,7 @@ semantic.compound-conflict
 semantic.range-unspecified
 layout.overlap
 layout.runtime-alternatives
+layout-policy.ambiguous
 layout.topology-changed
 layout.simplified
 language.default-unavailable
@@ -1152,11 +1153,26 @@ include_paths = ["include"]
 default_language = 1033
 rc_encoding = "cp1252"
 strict = false
-qt_check = "auto"
-qt_font_scale = 1.0
-layout_mode = "faithful"
 ui_comments = true
-# qt_preview = "qt-previews"
+
+[layout]
+mode = "faithful"
+alignment_tolerance_dlu = 3
+text_width_safety_factor = 1.1
+max_designer_width_factor = 1.5
+gap_growth = "proportional"
+runtime_alternatives = "auto"
+
+[layout.simplified]
+profile = "balanced"
+max_serialized_tracks = 5
+
+[validation]
+qt = "auto"
+preview_font_scale = 1.0
+font_scales = [2.0]
+resize_scales = [0.75, 1.0, 1.5]
+# preview = "qt-previews"
 
 [defines]
 ENTERPRISE = 1
@@ -1171,6 +1187,14 @@ kind = "dialog"
 id_regex = 'IDD_(?P<name>[A-Z0-9_]+)'
 name_template = "${name}_DIALOG"
 ```
+
+The manifest adapter validates these tables into immutable `LayoutPolicySet`,
+`LayoutPolicy`, `SimplifiedPolicy`, and `ValidationPolicy` values. Batch
+orchestration resolves a layout policy from all known identities of each
+dialog before mapping or inference. Core layout, mapping, simplification, and
+Qt-check modules receive typed values; they do not inspect raw TOML. Exact and
+regexp overrides use explicit precedence and reject equal winners, keeping
+configuration order out of deterministic conversion.
 
 Naming, control, and semantic responsibilities remain independent typed
 sections inside that file. This prevents a class substitution from renaming an

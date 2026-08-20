@@ -22,6 +22,7 @@ from rc2ui.domain.dialog import (
 from rc2ui.domain.geometry import RectDlu
 from rc2ui.domain.resource_id import ResourceId
 from rc2ui.layout.infer import LayoutBuilder, _layout_topology_diagnostics
+from rc2ui.layout.policy import RuntimeAlternativesPolicy
 from rc2ui.mapping.controls import ControlMapper
 from rc2ui.naming.resolver import NameResolver
 from rc2ui.qt.emitter import emit_ui
@@ -276,6 +277,40 @@ class LayoutAndEmitterTests(unittest.TestCase):
         self.assertNotIn(
             "layout.runtime-alternatives",
             [item.code for item in rejected.diagnostics],
+        )
+
+    def test_runtime_alternative_policy_requires_order_or_disables(self) -> None:
+        dialog = make_dialog(
+            [
+                ("Edit", "", 0, RectDlu(57, 8, 105, 14)),
+                ("Button", "One", 0, RectDlu(7, 30, 35, 14)),
+                ("Button", "Two", 0, RectDlu(50, 30, 35, 14)),
+                ("Button", "Three", 0, RectDlu(93, 30, 35, 14)),
+                ("ComboBox", "", 0, RectDlu(57, 8, 105, 14)),
+            ]
+        )
+        mapped = tuple(ControlMapper().map(item) for item in dialog.controls)
+        naming = NameResolver().resolve(dialog, mapped)
+
+        automatic = LayoutBuilder().build(dialog, mapped, naming)
+        source_order = LayoutBuilder(
+            runtime_alternatives=RuntimeAlternativesPolicy.SOURCE_ORDER,
+        ).build(dialog, mapped, naming)
+        disabled = LayoutBuilder(
+            runtime_alternatives=RuntimeAlternativesPolicy.OFF,
+        ).build(dialog, mapped, naming)
+
+        self.assertIn(
+            "layout.runtime-alternatives",
+            [item.code for item in automatic.diagnostics],
+        )
+        self.assertNotIn(
+            "layout.runtime-alternatives",
+            [item.code for item in source_order.diagnostics],
+        )
+        self.assertNotIn(
+            "layout.runtime-alternatives",
+            [item.code for item in disabled.diagnostics],
         )
 
     def test_emits_geometry_grid_and_label_buddy_without_child_geometry(self) -> None:

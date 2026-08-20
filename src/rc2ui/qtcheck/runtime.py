@@ -82,6 +82,7 @@ class RuntimeInspector:
         path: Path,
         factors: tuple[float, ...],
         font_factor: float,
+        font_factors: tuple[float, ...] | None = None,
         geometry_reference: object,
         result: dict[str, object],
         diagnostics: list[dict[str, str]],
@@ -160,16 +161,28 @@ class RuntimeInspector:
                 path=path,
             )
         )
-        if baseline_size is not None and font_factor > 1.0:
-            self._check_dynamic_font(
-                root,
-                widgets,
-                path=path,
-                baseline_size=baseline_size,
-                factor=font_factor,
-                expected_overlaps=expected_overlaps,
-                result=result,
-                diagnostics=diagnostics,
+        requested_font_factors = font_factors or (font_factor,)
+        font_tests: list[dict[str, object]] = []
+        if baseline_size is not None:
+            for factor in requested_font_factors:
+                if abs(factor - 1.0) < 1e-9:
+                    continue
+                font_tests.append(
+                    self._check_dynamic_font(
+                        root,
+                        widgets,
+                        path=path,
+                        baseline_size=baseline_size,
+                        factor=factor,
+                        expected_overlaps=expected_overlaps,
+                        diagnostics=diagnostics,
+                    )
+                )
+        result["font_tests"] = font_tests
+        if font_tests:
+            result["font_test"] = max(
+                font_tests,
+                key=lambda item: float(item["factor"]),
             )
 
     def capture_preview(self, root: Any, preview_path: Path) -> None:
@@ -203,9 +216,8 @@ class RuntimeInspector:
         baseline_size: tuple[int, int],
         factor: float,
         expected_overlaps: set[tuple[str, str]],
-        result: dict[str, object],
         diagnostics: list[dict[str, str]],
-    ) -> None:
+    ) -> dict[str, object]:
         root.resize(*baseline_size)
         if root.layout() is not None:
             root.layout().activate()
@@ -217,35 +229,40 @@ class RuntimeInspector:
             include_font_requirements=True,
         )
         original_font = root.font()
-        scaled_font = _scaled_font(
-            root.font(),
-            factor=factor,
-            fallback_height=root.fontMetrics().height(),
-        )
-        root.setFont(scaled_font)
-        root.ensurePolished()
-        self.process_events()
-        after = self._runtime_snapshot(
-            widgets,
-            root,
-            baseline=False,
-            include_font_requirements=True,
-        )
-        font_diagnostics = analyze_font_change(
-            before,
-            after,
-            path=path,
-            expected_overlaps=expected_overlaps,
-        )
-        diagnostics.extend(font_diagnostics)
-        result["font_test"] = {
-            "factor": factor,
-            "font_point_size_before": original_font.pointSizeF(),
-            "font_point_size_after": root.font().pointSizeF(),
-            "form_size_before": before["form_size"],
-            "form_size_after": after["form_size"],
-            "passed": not font_diagnostics,
-        }
+        try:
+            scaled_font = _scaled_font(
+                root.font(),
+                factor=factor,
+                fallback_height=root.fontMetrics().height(),
+            )
+            root.setFont(scaled_font)
+            root.ensurePolished()
+            self.process_events()
+            after = self._runtime_snapshot(
+                widgets,
+                root,
+                baseline=False,
+                include_font_requirements=True,
+            )
+            font_diagnostics = analyze_font_change(
+                before,
+                after,
+                path=path,
+                expected_overlaps=expected_overlaps,
+            )
+            diagnostics.extend(font_diagnostics)
+            return {
+                "factor": factor,
+                "font_point_size_before": original_font.pointSizeF(),
+                "font_point_size_after": root.font().pointSizeF(),
+                "form_size_before": before["form_size"],
+                "form_size_after": after["form_size"],
+                "passed": not font_diagnostics,
+            }
+        finally:
+            root.setFont(original_font)
+            root.ensurePolished()
+            self.process_events()
 
     def _declared_widgets(
         self,

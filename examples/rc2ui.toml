@@ -5,11 +5,26 @@ include_paths = ["include"]
 default_language = 1033
 rc_encoding = "cp1252"
 strict = false
-layout_mode = "faithful"
 ui_comments = true
-qt_check = "auto"
-qt_font_scale = 1.0
-# qt_preview = "qt-previews"
+
+[layout]
+mode = "faithful"
+alignment_tolerance_dlu = 3
+text_width_safety_factor = 1.1
+max_designer_width_factor = 1.5
+gap_growth = "proportional"
+runtime_alternatives = "auto"
+
+[layout.simplified]
+profile = "balanced"
+max_serialized_tracks = 5
+
+[validation]
+qt = "auto"
+preview_font_scale = 1.0
+font_scales = [2.0]
+resize_scales = [0.75, 1.0, 1.5]
+# preview = "qt-previews"
 
 [defines]
 WIN32 = 1

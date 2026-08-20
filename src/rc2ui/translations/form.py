@@ -46,6 +46,7 @@ def prepare_localized_form(
     form_class: str,
     control_map: ControlMap | None,
     ui_path: PurePosixPath,
+    text_width_safety_factor: float = 1.1,
 ) -> PreparedLocalizedForm:
     identity = _dialog_identity(multilingual.dialog.key.resource_id)
     prefix = f"{multilingual.dialog.key.source.as_posix()}:{identity}"
@@ -63,7 +64,10 @@ def prepare_localized_form(
         nontranslatable,
     )
     context = form_class
-    mapper = ControlMapper(control_map)
+    mapper = ControlMapper(
+        control_map,
+        text_width_safety_factor=text_width_safety_factor,
+    )
     messages: list[TranslationMessage] = []
     diagnostics: list[Diagnostic] = []
 

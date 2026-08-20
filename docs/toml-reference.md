@@ -88,11 +88,26 @@ include_paths = ["include", "third_party/include"]
 default_language = 1033
 rc_encoding = "cp1252"
 strict = false
-layout_mode = "faithful"
 ui_comments = true
-qt_check = "auto"
-qt_font_scale = 1.0
-qt_preview = "qt-previews"
+
+[layout]
+mode = "faithful"
+alignment_tolerance_dlu = 3
+text_width_safety_factor = 1.1
+max_designer_width_factor = 1.5
+gap_growth = "proportional"
+runtime_alternatives = "auto"
+
+[layout.simplified]
+profile = "balanced"
+max_serialized_tracks = 5
+
+[validation]
+qt = "auto"
+preview = "qt-previews"
+preview_font_scale = 1.0
+font_scales = [2.0]
+resize_scales = [0.75, 1.0, 1.5]
 
 [defines]
 WIN32 = 1
@@ -138,11 +153,9 @@ mode, layout mode, UI comments, Qt checks, previews, and preview font scale.
 | `default_language` | integer or integer string | `1033` | Authoritative Win32 LANGID for shared `.ui` content |
 | `rc_encoding` | codec name | `cp1251` | Fallback for RC text that is neither BOM-marked nor valid UTF-8 |
 | `strict` | boolean | `false` | Make warnings affect the exit status |
-| `layout_mode` | `faithful` or `simplified` | `faithful` | Layout fidelity/editability strategy |
+| `layout` | table | defaults below | Layout inference, spacing, and simplified-mode policy |
 | `ui_comments` | boolean | `true` | Include translation comments in generated `.ui` strings |
-| `qt_check` | `auto`, `required`, or `off` | `auto` | Optional Qt runtime validation policy |
-| `qt_font_scale` | positive number | `1.0` | Scale the application font used by Qt validation and previews |
-| `qt_preview` | path string | unset | PNG/HTML preview output; requires a Qt binding |
+| `validation` | table | defaults below | Qt checks, previews, and scale matrix |
 | `defines` | TOML table | `{}` | Integer preprocessor definitions |
 | `input_groups` | array of tables | required | Independent resource namespaces |
 | `naming` | table | unset | Object-name rules |
@@ -159,9 +172,9 @@ base-zero integer parser, such as `"0x400"`. Boolean values are not integers.
 compiled resources as UTF-16. Use an explicit encoding when the source project
 uses a non-UTF code page.
 
-`layout_mode = "faithful"` emits the full coordinate-track reconstruction and
+`layout.mode = "faithful"` emits the full coordinate-track reconstruction and
 is the default. It is intended for maximum geometric fidelity. Set
-`layout_mode = "simplified"` to post-process that same reconstruction into
+`layout.mode = "simplified"` to post-process that same reconstruction into
 smaller `QFormLayout`, `QHBoxLayout`, `QVBoxLayout`, and compact `QGridLayout`
 regions where doing so preserves topology. Substantial vertical separators may
 form coarse left/separator/right grids with shared row bands; perpendicular
@@ -169,15 +182,96 @@ horizontal lines create nested top/bottom regions. Source margins and positive
 gaps remain proportional layout tracks. Ambiguous, crossing, or structurally
 worse candidates fall back independently to another safe candidate or a
 cleaned faithful grid. The direct command-line equivalent is
-`convert --layout-mode simplified`; it may also override the manifest for a
-one-off run.
+`convert --layout-mode simplified`; it changes the default mode for a one-off
+run, while a matching per-dialog override may still select its own mode.
 
 Per-form report fields `layout_mode_requested`, `layout_mode_used`,
-`editability_score`, `simplified_regions`, `faithful_fallback_regions`, and
-`layout_transformations` explain the result. A transformation such as
+`layout_policy`, `editability_score`, `simplified_regions`,
+`faithful_fallback_regions`, and `layout_transformations` explain the result.
+`layout_policy` is the fully resolved value after per-dialog overrides. A
+transformation such as
 `grid-to-form-grid:2` means that two regions used that rewrite. The score is a
 relative structural metric for comparing the two outputs of the same form; it
 is not a fidelity percentage.
+
+### Layout policy
+
+```toml
+[layout]
+mode = "faithful"
+alignment_tolerance_dlu = 3
+text_width_safety_factor = 1.1
+max_designer_width_factor = 1.5
+gap_growth = "proportional"
+runtime_alternatives = "auto"
+
+[layout.simplified]
+profile = "balanced"
+max_serialized_tracks = 5
+```
+
+| Field | Values | Default | Effect |
+| --- | --- | --- | --- |
+| `layout.mode` | `faithful`, `simplified` | `faithful` | Select the emitted layout strategy |
+| `layout.alignment_tolerance_dlu` | non-negative integer | `3` | Merge source guides whose coordinates differ by at most this many DLU |
+| `layout.text_width_safety_factor` | finite number >= 1 | `1.1` | Reserve cross-toolkit width for text and determine deterministic multiline button breaks |
+| `layout.max_designer_width_factor` | finite number >= 1 | `1.5` | Cap text-driven enlargement of the serialized Designer canvas relative to the source width |
+| `layout.gap_growth` | `proportional`, `minimum`, `outer-minimum` | `proportional` | Decide which empty tracks receive surplus space |
+| `layout.runtime_alternatives` | `auto`, `source-order`, `off` | `auto` | Control geometric collapse of probable runtime layers |
+| `layout.simplified.profile` | `conservative`, `balanced`, `aggressive` | `balanced` | Set how much structural improvement a topology-safe rewrite must provide |
+| `layout.simplified.max_serialized_tracks` | integer >= 2 | `5` | Bound stretch vectors created by separator-panel slicing and coarse shared rows |
+
+`gap_growth` never removes the source minimum distance. `proportional` is the
+reference behavior: controls and gaps share surplus space in their source DLU
+ratio. `minimum` keeps every wholly empty gap at its minimum while occupied
+tracks grow. `outer-minimum` applies that treatment only to empty leading and
+trailing margins, leaving internal gaps proportional.
+
+`runtime_alternatives = "auto"` accepts strict geometry even when source order
+has no supporting pattern. `source-order` additionally requires nearby
+z-order or a repeated layer offset; it is useful when authored overlaps are
+common but runtime layers follow source order. `off` retains every overlapping
+control as an independent layout item. None of these settings invents
+visibility logic.
+
+The `conservative` simplified profile requires both lower serialization cost
+and lower Designer friction. `balanced` uses the established cost-based
+selection. `aggressive` also accepts an equal-cost candidate when it reduces
+Designer friction. All profiles retain the same absolute topology, grouping,
+font-growth, and extent guards; the profile cannot authorize a geometrically
+unsafe rewrite.
+
+Use per-dialog policy only for source families whose intent differs from the
+project default:
+
+```toml
+[[layout.overrides]]
+name = "dense-reports"
+dialog_regex = 'IDD_REPORT_.*'
+priority = 20
+mode = "simplified"
+alignment_tolerance_dlu = 2
+max_designer_width_factor = 2.0
+gap_growth = "minimum"
+runtime_alternatives = "source-order"
+
+[layout.overrides.simplified]
+profile = "conservative"
+max_serialized_tracks = 7
+
+[[layout.overrides]]
+name = "one-reference-form"
+dialog = "IDD_REFERENCE"
+priority = 100
+mode = "faithful"
+```
+
+Each override requires exactly one of `dialog` or `dialog_regex`; regular
+expressions use full-match semantics. Selectors are matched against the source
+dialog ID, compiled symbolic aliases, a named resource ID, and `#ordinal`.
+Higher priority wins, then an exact selector beats a regexp. Multiple winners
+at equal precedence are an error rather than depending on TOML order. An
+override inherits every omitted field from `[layout]`.
 
 `ui_comments = false` removes both `comment` and `extracomment` attributes from
 generated `.ui` strings. The direct equivalent is `convert --no-ui-comments`;
@@ -187,19 +281,43 @@ TS catalogs omit that key too while retaining source provenance in
 `extracomment`. Identical source strings in the same form then share a
 translation; incompatible duplicates are diagnosed as translation conflicts.
 
-`qt_check = "auto"` validates when PyQt6 or PySide6 is already installed and is
-otherwise silent. `required` makes an unavailable binding or validation error a
-failure. `off` disables runtime validation. Setting `qt_preview` implicitly
-requires validation because previews need a real Qt runtime.
+### Validation policy
 
-`qt_font_scale` must be positive and finite. It scales the `QApplication` font
-before any form is loaded and then scales explicit widget fonts from the `.ui`,
-because those overrides do not inherit the application font. Qt size hints,
-runtime checks, and PNG previews therefore all observe the selected scale. The
-scale is not written back into generated `.ui` files; the application remains
-free to change its font at runtime. For example, `qt_font_scale = 1.5` previews
-at 150% of each form's normal font size. The direct command equivalents are
-`convert --qt-font-scale 1.5` and `qt-check --font-scale 1.5`.
+```toml
+[validation]
+qt = "auto"
+preview = "qt-previews"
+preview_font_scale = 1.0
+font_scales = [1.5, 2.0]
+resize_scales = [0.75, 1.0, 1.5]
+```
+
+`validation.qt = "auto"` validates when PyQt6 or PySide6 is already installed
+and is otherwise silent. `required` makes an unavailable binding or validation
+error a failure. `off` disables runtime validation. Setting
+`validation.preview` implicitly requires validation because previews need a
+real Qt runtime.
+
+`validation.preview_font_scale` must be positive and finite. It scales the
+`QApplication` font before any form is loaded and then scales explicit widget
+fonts from the `.ui`, because those overrides do not inherit the application
+font. Qt size hints, runtime checks, and PNG previews therefore all observe the
+selected scale. The scale is not written back into generated `.ui` files; the
+application remains free to change its font at runtime. For example,
+`preview_font_scale = 1.5` previews at 150% of each form's normal font size.
+The direct command equivalents are `convert --qt-font-scale 1.5` and
+`qt-check --font-scale 1.5`.
+
+`font_scales` and `resize_scales` are non-empty arrays of unique positive
+finite numbers. Each `font_scales` value other than one is applied as an
+in-place dynamic font change after loading; each result is stored in
+`font_tests`, with the largest factor also exposed as `font_test` for report
+consumers. `resize_scales` determines the smaller, baseline, and larger runtime
+sizes. A baseline factor of `1.0` is added internally if omitted.
+
+The top-level `layout_mode`, `qt_check`, `qt_preview`, and `qt_font_scale`
+fields remain accepted as concise command-oriented aliases. Do not specify an
+alias together with its nested equivalent in the same manifest.
 
 ### Input groups
 
@@ -1005,7 +1123,9 @@ version = 1
 project_root = ".."
 output = "generated-ui"
 default_language = 1033
-qt_check = "auto"
+
+[validation]
+qt = "auto"
 
 [[input_groups]]
 rc = ["resources/main.rc"]

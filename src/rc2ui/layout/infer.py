@@ -31,6 +31,7 @@ from rc2ui.layout.cross_container import align_peer_group_rows
 from rc2ui.layout.font_scaling import make_font_responsive
 from rc2ui.layout.grid import build_coordinate_tracks
 from rc2ui.layout.initial_size import initial_form_size
+from rc2ui.layout.policy import RuntimeAlternativesPolicy
 from rc2ui.layout.row_anchors import coherent_vertical_anchor_groups
 from rc2ui.layout.tab_order import source_tab_order
 from rc2ui.mapping.model import (
@@ -121,8 +122,20 @@ class _ObjectNames:
 
 
 class LayoutBuilder:
-    def __init__(self, *, coordinate_tolerance: int = 3) -> None:
+    def __init__(
+        self,
+        *,
+        coordinate_tolerance: int = 3,
+        text_width_safety_factor: float = 1.1,
+        max_designer_width_factor: float = 1.5,
+        runtime_alternatives: RuntimeAlternativesPolicy = (
+            RuntimeAlternativesPolicy.AUTO
+        ),
+    ) -> None:
         self.coordinate_tolerance = coordinate_tolerance
+        self.text_width_safety_factor = text_width_safety_factor
+        self.max_designer_width_factor = max_designer_width_factor
+        self.runtime_alternatives = runtime_alternatives
 
     def build(
         self,
@@ -256,17 +269,24 @@ class LayoutBuilder:
             for order in node.orders:
                 if len(node.orders) == 1:
                     self._resolved_rects[order] = node.rect
-        roots, alternative_detections = collapse_runtime_alternatives(
-            roots,
-            tolerance=self.coordinate_tolerance,
-            next_name=self._names.next,
-            forced_pairs=self._usable_hint_pairs(
-                self._layout_hints.alternative_pairs
-            ),
-            rejected_pairs=self._usable_hint_pairs(
-                self._layout_hints.rejected_alternative_pairs
-            ),
-        )
+        if self.runtime_alternatives is RuntimeAlternativesPolicy.OFF:
+            alternative_detections = ()
+        else:
+            roots, alternative_detections = collapse_runtime_alternatives(
+                roots,
+                tolerance=self.coordinate_tolerance,
+                next_name=self._names.next,
+                forced_pairs=self._usable_hint_pairs(
+                    self._layout_hints.alternative_pairs
+                ),
+                rejected_pairs=self._usable_hint_pairs(
+                    self._layout_hints.rejected_alternative_pairs
+                ),
+                require_order_evidence=(
+                    self.runtime_alternatives
+                    is RuntimeAlternativesPolicy.SOURCE_ORDER
+                ),
+            )
         for group, detection in enumerate(alternative_detections):
             for layer, orders in enumerate(detection.layers):
                 for order in orders:
@@ -360,6 +380,8 @@ class LayoutBuilder:
         initial_size = initial_form_size(
             client_bounds,
             mapped_controls,
+            text_width_safety_factor=self.text_width_safety_factor,
+            max_designer_width_factor=self.max_designer_width_factor,
         )
         root_layout = make_font_responsive(
             root_layout,

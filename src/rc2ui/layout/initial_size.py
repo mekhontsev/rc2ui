@@ -11,7 +11,6 @@ from rc2ui.mapping.text_layout import estimated_control_text_width_dlu
 _HORIZONTAL_PIXELS_PER_DLU = 1.75
 _VERTICAL_PIXELS_PER_DLU = 1.875
 _MINIMUM_STANDALONE_WIDTH_DLU = 60
-_MAXIMUM_DESIGNER_WIDTH_FACTOR = 1.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +23,9 @@ class InitialFormSize:
 def initial_form_size(
     bounds: RectDlu,
     mapped_controls: tuple[MappedControl, ...],
+    *,
+    text_width_safety_factor: float = 1.1,
+    max_designer_width_factor: float = 1.5,
 ) -> InitialFormSize:
     """Estimate a useful serialized Designer canvas from font-relative DLU.
 
@@ -49,6 +51,7 @@ def initial_form_size(
         text_width = estimated_control_text_width_dlu(
             control.text or "",
             mapped.qt_class,
+            safety_factor=text_width_safety_factor,
         )
         if (
             text_width is None
@@ -71,7 +74,7 @@ def initial_form_size(
         )
     required_width_dlu = min(
         required_width_dlu,
-        bounds.width * _MAXIMUM_DESIGNER_WIDTH_FACTOR,
+        bounds.width * max_designer_width_factor,
     )
     effective_width_dlu = max(1, ceil(required_width_dlu))
     return InitialFormSize(
