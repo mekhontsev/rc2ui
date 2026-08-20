@@ -811,11 +811,23 @@ validation loads the final XML, resizes it, changes its font in place, and
 checks the same observable topology used for faithful output, including newly
 introduced horizontal or vertical text clipping.
 
+A final typed spacer-compaction pass distinguishes explicit source gaps,
+extent markers, hidden-control extents, font floors, and trailing faithful
+tracks. It does not treat a zero-sized `ExtentMarker` as a no-op: in a
+three-zone grid that item makes otherwise empty proportional tracks participate
+in Qt's surplus-space distribution. With proportional growth, only a wrapper
+whose outer weights are literally zero is removed. Fixed-margin policies allow
+the equivalent margins to move onto the inner layout; the fully fixed policy
+also permits an exact repeated-gap sequence to become layout spacing. The
+conservative profile bypasses compaction. This keeps the default post-pass
+equivalence-gated rather than using visual-size heuristics.
+
 The simplifier returns transformation counts, local-fallback counts, and a
 normalized structural editability score. These values are serialized with each
-form, so large batches can be audited without inspecting Designer files one by
-one. Runtime Qt metrics never choose a candidate, preserving deterministic
-output across machines.
+form together with spacer transformation counts and a semantic breakdown of
+the remaining spacers, so large batches can be audited without inspecting
+Designer files one by one. Runtime Qt metrics never choose a candidate,
+preserving deterministic output across machines.
 
 ### Runtime alternatives and z-order
 
@@ -1116,7 +1128,7 @@ name, confidence, evidence, anchors, group and alternative states, compound
 provenance, control-map rule, button group, runtime-configured properties, and
 emission state. It also records the requested/effective layout mode,
 editability score, simplified/fallback region counts, and deterministic layout
-transformation summary.
+and spacer transformation summaries, including counts by spacer role.
 
 ## Determinism
 

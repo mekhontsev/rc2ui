@@ -4,7 +4,8 @@ from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, replace
 
-from rc2ui.layout.policy import SimplifiedPolicy, SimplifiedProfile
+from rc2ui.layout.policy import GapGrowth, SimplifiedPolicy, SimplifiedProfile
+from rc2ui.layout.spacer_compaction import compact_simplified_spacers
 from rc2ui.qt.model import (
     QtEnum,
     QtLayout,
@@ -27,6 +28,8 @@ class SimplificationResult:
     simplified_regions: int
     faithful_fallback_regions: int
     transformations: tuple[str, ...]
+    spacer_transformations: tuple[str, ...]
+    spacers_removed: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -1422,6 +1425,7 @@ def simplify_form(
     policy: SimplifiedPolicy = SimplifiedPolicy(),
     *,
     alignment_tolerance_dlu: float = 3.0,
+    gap_growth: GapGrowth = GapGrowth.PROPORTIONAL,
 ) -> SimplificationResult:
     """Create a Designer-oriented form without mutating faithful planning."""
 
@@ -1431,9 +1435,15 @@ def simplify_form(
         policy=policy,
         alignment_tolerance_dlu=alignment_tolerance_dlu,
     )
+    simplified = simplifier.widget(root_widget)
+    compacted = compact_simplified_spacers(
+        simplified,
+        profile=policy.profile,
+        gap_growth=gap_growth,
+    )
     simplified = _retain_root_width_ruler(
         root_widget,
-        simplifier.widget(root_widget),
+        compacted.root_widget,
         names=simplifier.names,
     )
     return SimplificationResult(
@@ -1445,6 +1455,8 @@ def simplify_form(
             f"{name}:{count}"
             for name, count in sorted(simplifier.transformations.items())
         ),
+        spacer_transformations=compacted.transformations,
+        spacers_removed=compacted.removed_spacers,
     )
 
 

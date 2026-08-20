@@ -180,6 +180,23 @@ class BatchConversionTests(unittest.TestCase):
             ["grid-to-hbox:1"],
         )
         self.assertEqual(
+            report["forms"][0]["spacer_transformations"],
+            [],
+        )
+        self.assertEqual(report["forms"][0]["spacers_removed"], 0)
+        self.assertEqual(
+            report["forms"][0]["spacers"],
+            {
+                "explicit_gaps": 1,
+                "extent_markers": 1,
+                "font_floors": 0,
+                "hidden_extents": 0,
+                "other": 0,
+                "total": 2,
+                "trailing_tracks": 0,
+            },
+        )
+        self.assertEqual(
             [
                 widget.get("name")
                 for widget in simplified_xml.findall(".//widget")

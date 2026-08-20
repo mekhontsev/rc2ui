@@ -23,6 +23,7 @@ from rc2ui.application.models import (
     LayoutEvidenceArtifact,
     LayoutPolicyArtifact,
     RelationEvidenceArtifact,
+    SpacerArtifact,
 )
 from rc2ui.application.output_names import (
     OutputNameAllocator,
@@ -37,6 +38,7 @@ from rc2ui.layout.infer import LayoutBuilder
 from rc2ui.layout.mode import LayoutMode
 from rc2ui.layout.policy import LayoutPolicy
 from rc2ui.layout.simplify import editability_score, simplify_form
+from rc2ui.layout.spacer_compaction import summarize_spacers
 from rc2ui.mapping.controls import ControlMapper
 from rc2ui.mapping.overrides import ControlMap
 from rc2ui.naming.map import NamingKind, NamingMap
@@ -288,10 +290,12 @@ class BatchConverter:
                     )
                 )
 
-        if any(
-            form.layout_mode_requested == LayoutMode.SIMPLIFIED.value
+        simplified_requests = tuple(
+            form
             for form in forms
-        ):
+            if form.layout_mode_requested == LayoutMode.SIMPLIFIED.value
+        )
+        if simplified_requests:
             simplified_form_count = sum(
                 form.layout_mode_used == LayoutMode.SIMPLIFIED.value
                 for form in forms
@@ -305,6 +309,14 @@ class BatchConverter:
             average_editability = sum(
                 form.editability_score for form in forms
             ) / len(forms)
+            removed_spacers = sum(
+                form.spacers_removed for form in simplified_requests
+            )
+            remaining_spacers = sum(
+                form.spacers.total
+                for form in simplified_requests
+                if form.spacers is not None
+            )
             diagnostics.append(
                 Diagnostic(
                     code="layout.simplified",
@@ -313,7 +325,9 @@ class BatchConverter:
                         f"simplified {simplified_region_count} layout "
                         f"region(s) in {simplified_form_count}/{len(forms)} "
                         f"form(s); kept {fallback_region_count} faithful "
-                        "fallback region(s); average editability score "
+                        f"fallback region(s); removed {removed_spacers} "
+                        f"redundant spacer(s), kept {remaining_spacers}; "
+                        "average editability score "
                         f"{average_editability:.3f}"
                     ),
                 )
@@ -566,6 +580,8 @@ class BatchConverter:
         simplified_regions = 0
         faithful_fallback_regions = 0
         layout_transformations: tuple[str, ...] = ()
+        spacer_transformations: tuple[str, ...] = ()
+        spacers_removed = 0
         if layout_policy.mode is LayoutMode.SIMPLIFIED:
             simplified = simplify_form(
                 layout.root_widget,
@@ -573,11 +589,14 @@ class BatchConverter:
                 alignment_tolerance_dlu=(
                     layout_policy.alignment_tolerance_dlu
                 ),
+                gap_growth=layout_policy.gap_growth,
             )
             layout = replace(layout, root_widget=simplified.root_widget)
             simplified_regions = simplified.simplified_regions
             faithful_fallback_regions = simplified.faithful_fallback_regions
             layout_transformations = simplified.transformations
+            spacer_transformations = simplified.spacer_transformations
+            spacers_removed = simplified.spacers_removed
             if simplified_regions:
                 layout_mode_used = LayoutMode.SIMPLIFIED
         layout = replace(
@@ -588,6 +607,7 @@ class BatchConverter:
             ),
         )
         editability = editability_score(layout.root_widget)
+        spacer_summary = summarize_spacers(layout.root_widget)
         relative_output = PurePosixPath(
             allocation.output.relative_to(output_dir).as_posix()
         )
@@ -778,6 +798,17 @@ class BatchConverter:
             simplified_regions=simplified_regions,
             faithful_fallback_regions=faithful_fallback_regions,
             layout_transformations=layout_transformations,
+            spacer_transformations=spacer_transformations,
+            spacers_removed=spacers_removed,
+            spacers=SpacerArtifact(
+                total=spacer_summary.total,
+                explicit_gaps=spacer_summary.explicit_gaps,
+                extent_markers=spacer_summary.extent_markers,
+                hidden_extents=spacer_summary.hidden_extents,
+                font_floors=spacer_summary.font_floors,
+                trailing_tracks=spacer_summary.trailing_tracks,
+                other=spacer_summary.other,
+            ),
         )
 
     def _collect_suggestions(

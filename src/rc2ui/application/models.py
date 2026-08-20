@@ -195,6 +195,17 @@ class LayoutPolicyArtifact:
 
 
 @dataclass(frozen=True, slots=True)
+class SpacerArtifact:
+    total: int
+    explicit_gaps: int
+    extent_markers: int
+    hidden_extents: int
+    font_floors: int
+    trailing_tracks: int
+    other: int
+
+
+@dataclass(frozen=True, slots=True)
 class FormArtifact:
     source: str
     rc_id: str
@@ -218,6 +229,9 @@ class FormArtifact:
     simplified_regions: int = 0
     faithful_fallback_regions: int = 0
     layout_transformations: tuple[str, ...] = ()
+    spacer_transformations: tuple[str, ...] = ()
+    spacers_removed: int = 0
+    spacers: SpacerArtifact | None = None
 
 
 @dataclass(frozen=True, slots=True)

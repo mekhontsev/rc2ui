@@ -343,6 +343,15 @@ Outer margins and meaningful gaps remain explicit, proportionally stretched
 regions. If a candidate changes those invariants, only that container keeps a
 cleaned faithful grid; unrelated containers may still be simplified.
 
+After candidate selection, simplified output runs a conservative spacer
+compaction pass. With the default proportional growth policy it removes only
+structurally redundant zero-margin extent wrappers. Non-zero extent markers,
+explicit gaps, hidden-control extents, and font floors remain because they
+carry resize or dynamic-font behavior. If `gap_growth = "minimum"` is selected,
+fixed outer margins may be stored as layout margins and exact repeated fixed
+gaps as layout spacing. The `conservative` simplified profile disables this
+post-pass entirely.
+
 Select the mode in the manifest:
 
 ```toml
@@ -392,8 +401,10 @@ guidance are in the TOML reference.
 
 The conversion report records the requested and effective mode, fully resolved
 per-form policy, editability score, simplified and fallback region counts, and
-the transformations used for each form. Runtime Qt validation applies to both
-modes.
+the transformations used for each form. It also records `spacers_removed`,
+`spacer_transformations`, and a `spacers` breakdown into explicit gaps, extent
+markers, hidden extents, font floors, trailing tracks, and other spacers.
+Runtime Qt validation applies to both modes.
 
 `GROUPBOX` ownership is inferred from complete geometric containment with a
 small tolerance. A control that merely crosses the frame is not moved inside.

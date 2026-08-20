@@ -187,7 +187,10 @@ run, while a matching per-dialog override may still select its own mode.
 
 Per-form report fields `layout_mode_requested`, `layout_mode_used`,
 `layout_policy`, `editability_score`, `simplified_regions`,
-`faithful_fallback_regions`, and `layout_transformations` explain the result.
+`faithful_fallback_regions`, `layout_transformations`,
+`spacer_transformations`, `spacers_removed`, and `spacers` explain the result.
+The `spacers` object classifies remaining explicit gaps, extent markers,
+hidden extents, font floors, trailing tracks, and unclassified spacers.
 `layout_policy` is the fully resolved value after per-dialog overrides. A
 transformation such as
 `grid-to-form-grid:2` means that two regions used that rewrite. The score is a
@@ -226,6 +229,13 @@ reference behavior: controls and gaps share surplus space in their source DLU
 ratio. `minimum` keeps every wholly empty gap at its minimum while occupied
 tracks grow. `outer-minimum` applies that treatment only to empty leading and
 trailing margins, leaving internal gaps proportional.
+
+In simplified mode, spacer compaction follows the same policy. Under
+`proportional`, only an extent wrapper whose outer weights are all zero can be
+removed. Under `minimum`, fixed source margins can become layout margins and a
+fully alternating sequence of equal fixed gaps can become layout `spacing`.
+`outer-minimum` permits the margin conversion but retains internal gap
+spacers. The `conservative` simplified profile retains all spacer structure.
 
 `runtime_alternatives = "auto"` accepts strict geometry even when source order
 has no supporting pattern. `source-order` additionally requires nearby
